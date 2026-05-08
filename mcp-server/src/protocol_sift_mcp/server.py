@@ -58,7 +58,11 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="finding_record",
-            description="Register a finding. REJECTS if pins[] is empty — emit a finding with confidence='unknown' and a gap-explaining claim instead.",
+            description=(
+                "REJECTS if pins[] is empty — record gaps as a separate finding with "
+                "confidence='unknown', at least one pin pointing at the artifact you "
+                "could not conclude on, and a claim describing the gap."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {

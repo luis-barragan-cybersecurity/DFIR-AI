@@ -1,9 +1,11 @@
 """Audit log tests. Plain append-only JSONL — no hash links, no signing."""
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
+from protocol_sift_mcp.server import list_tools
 from protocol_sift_mcp.tools import audit
 
 
@@ -54,11 +56,6 @@ def test_agent_message_append(tmp_path: Path) -> None:
     assert e["metadata"]["artifact"] == "/input/NTUSER.DAT"
 
 
-import asyncio
-
-from protocol_sift_mcp.server import call_tool, list_tools
-
-
 def test_mcp_tools_does_not_list_chain_tools() -> None:
     tools = asyncio.run(list_tools())
     names = {t.name for t in tools}
@@ -71,3 +68,19 @@ def test_mcp_tools_lists_audit_append() -> None:
     tools = asyncio.run(list_tools())
     names = {t.name for t in tools}
     assert "audit_append" in names
+
+
+def test_call_tool_audit_append_writes_to_audit_path(tmp_path: Path, monkeypatch) -> None:
+    """End-to-end: call_tool('audit_append') writes through AUDIT_PATH to disk."""
+    audit_log = tmp_path / "audit.jsonl"
+    from protocol_sift_mcp import server
+    monkeypatch.setattr(server, "AUDIT_PATH", audit_log)
+
+    from protocol_sift_mcp.server import call_tool
+    asyncio.run(call_tool("audit_append", {"event": "tool_call", "data": {"tool": "x"}}))
+
+    assert audit_log.exists()
+    line = audit_log.read_text().strip()
+    parsed = json.loads(line)
+    assert parsed["event"] == "tool_call"
+    assert parsed["data"] == {"tool": "x"}
