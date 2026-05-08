@@ -58,7 +58,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="finding_record",
-            description="Register a finding. REJECTS if pins[] is empty — use chain_acknowledge_gap instead.",
+            description="Register a finding. REJECTS if pins[] is empty — emit a finding with confidence='unknown' and a gap-explaining claim instead.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -168,7 +168,7 @@ async def list_tools() -> list[Tool]:
                 "{os: windows|macos|linux|memory_dump|unknown, confidence: 0-1, "
                 "evidence_class, signals[], is_directory, size}. Use first on every "
                 "ingested artifact to route to the correct OS specialist subagent. "
-                "Confidence < 0.6 should trigger a chain_acknowledge_gap or a second-signal lookup."
+                "Confidence < 0.6 should trigger a second-signal lookup or a finding marked confidence='uncertain'."
             ),
             inputSchema={
                 "type": "object",
