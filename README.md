@@ -1,6 +1,6 @@
 # MemoryHound
 
-**Drop-in DFIR superpowers for Claude Code.** Autonomous, cross-OS incident response triage with verifiable findings, signed attestations, and a tamper-evident audit trail.
+**Drop-in DFIR superpowers for Claude Code.** Autonomous, cross-OS incident response triage with structured findings and a plain audit trail.
 
 Submission to the [SANS FIND EVIL!](https://findevil.devpost.com) Hackathon (Apr 15 – Jun 15, 2026).
 
@@ -9,14 +9,14 @@ Submission to the [SANS FIND EVIL!](https://findevil.devpost.com) Hackathon (Apr
 
 ## What This Is
 
-MemoryHound turns Claude Code into an autonomous DFIR analyst. Drop evidence into a folder, run one command, get a signed forensic report.
+MemoryHound turns Claude Code into an autonomous DFIR analyst. Drop evidence into a folder, run one command, get a structured forensic report.
 
 Inspired by Daniel Miessler's [PAI](https://github.com/danielmiessler/PAI) pattern: the `.claude/` directory plus a custom MCP server give Claude the skills, agents, hooks, and forensic primitives to operate as a domain specialist — without modifying Claude itself.
 
 ```
 You drop:    Evidence files (memory dumps, registry hives, EVTX, plist, etc.)
 You run:     mh run <case-id>
-You get:     Signed findings, investigative narrative, tamper-evident audit log
+You get:     Structured findings, investigative narrative, plain audit log
 ```
 
 ## Works With Both Auth Modes
@@ -33,7 +33,7 @@ MemoryHound is a layer on top of Claude Code. Whatever auth Claude Code uses, Me
 # 1. Clone + install (one time)
 git clone https://github.com/saivarun3407/DFIR-AI.git memoryhound
 cd memoryhound
-./bin/mh init                                    # creates .venv, installs deps, generates ed25519 keys
+./bin/mh init                                    # creates .venv, installs deps
 ./bin/mh doctor                                  # confirms env is healthy
 
 # 2. Choose your auth (one time)
@@ -45,24 +45,20 @@ export ANTHROPIC_API_KEY=sk-ant-...             # API key
 mkdir -p cases/case-001/input
 cp /path/to/evidence/* cases/case-001/input/
 ./bin/mh run case-001
-
-# 4. Verify the chain + signature
-./bin/mh verify case-001
 ```
 
 Output lands in `cases/case-001/output/`:
 
 | File | Purpose |
 |---|---|
-| `chain-of-custody.jsonl` | Tamper-evident hash-linked audit log |
+| `audit.jsonl` | Plain append-only audit log of every step |
 | `findings.json` | Structured findings, every claim pinned |
 | `narrative.md` | Investigator-ready prose report |
 | `accuracy-report.md` | Honest FP / FN / hallucination tally |
-| `case-<id>.attestation.json` | ed25519-signed SLSA-style provenance statement |
 
 ## See It Work In 60 Seconds (No API Key Needed)
 
-The trust-chain demo proves the audit-trail mechanism without spending a token:
+The demo proves the end-to-end pipeline without spending a token:
 
 ```bash
 ./bin/mh init       # if not already done
@@ -71,13 +67,10 @@ The trust-chain demo proves the audit-trail mechanism without spending a token:
 
 Output:
 ```
-» Step 1: chain_init (genesis entry)            ✓
-» Step 2: ingest 2 artifacts (sha256+sha1)      ✓
-» Step 3: simulate 3 tool calls                 ✓
-» Step 4: verify chain — should be VALID        ✓
-» Step 5: tamper one entry                      ✓
-» Step 6: re-verify — should DETECT tamper      ✓ (chain INVALID)
-» Step 7: restore + verify green again          ✓
+» Step 1: self-collect safe host artifacts            ✓
+» Step 2: ingest, hash, write to audit log            ✓
+» Step 3: classify each artifact with os_detect       ✓
+» Step 4: parse plist contents                        ✓
 ```
 
 This is the 15 seconds of footage that wins the hackathon's Audit Trail Quality criterion.
@@ -94,8 +87,8 @@ You → claude (CLI) → triage-orchestrator skill
         │                   │                     │          │
         └───────┬───────────┴───────┬─────────────┘──────────┘
                 ▼                   ▼
-           Verifier        EvidenceCustodian
-        (re-runs claims)   (hash chain, sign)
+           Verifier        AuditLog
+        (re-runs claims)   (plain append-only)
                 │                   │
                 └─────────┬─────────┘
                           ▼
@@ -105,17 +98,9 @@ You → claude (CLI) → triage-orchestrator skill
               ─ schema-enforced finding records
 ```
 
-## Trust Stack — 7 Layers
+## Discipline
 
-| Layer | Mechanism |
-|---|---|
-| **1. Authenticity** | dual hash (sha256 + sha1) of evidence on ingest, read-only mount |
-| **2. Validation** | magic-byte + format probe before any tool runs |
-| **3. Verification** | every finding requires a pin (artifact + offset + tool + raw_excerpt); independent Verifier subagent re-runs |
-| **4. Accountability** | tamper-evident JSONL audit log with sha256 hash chain |
-| **5. Reproducibility** | pinned model + tool versions, `mh run` is replayable |
-| **6. Provenance** | ed25519-signed SLSA-style attestations per case |
-| **7. Honest Uncertainty** | confidence enum (`confirmed`/`inferred`/`uncertain`/`unknown`); refuses to hallucinate, acknowledges gaps |
+MemoryHound enforces a hard contract: every finding requires a structured evidence pin (artifact + tool + locator + raw excerpt). The MCP server rejects un-pinned claims at the schema layer; the PreToolUse hook rejects them again at the tool boundary. An independent Verifier subagent re-runs the cited tool against the cited evidence and dissents if it cannot reproduce the claim. Gaps are recorded explicitly with `confidence='unknown'` rather than fabricated.
 
 ## Supported Operating Systems
 
@@ -127,12 +112,11 @@ You → claude (CLI) → triage-orchestrator skill
 ## CLI Reference
 
 ```
-mh init [--with-forensics]   First-time setup: venv, deps, ed25519 keys.
+mh init [--with-forensics]   First-time setup: venv, deps.
                              --with-forensics adds heavy libs (Volatility, etc.)
-mh doctor                    Health check across env, deps, auth, keys.
-mh demo                      Trust-chain showcase — no real evidence, no tokens.
+mh doctor                    Health check across env, deps, auth.
+mh demo                      Showcase run — no real evidence, no tokens.
 mh run <case-id>             Run Claude Code triage on cases/<id>/input/.
-mh verify <case-id>          Verify chain-of-custody integrity for a case.
 mh status                    List cases + their phase.
 mh tools                     List MCP tools the agent can call.
 mh check                     Quick env probe (exit 0/1).
@@ -142,7 +126,6 @@ mh check                     Quick env probe (exit 0/1).
 
 | Component | Status |
 |---|---|
-| Trust stack (hash chain, ed25519 sign, attestation) | ✅ live, tested, demoed |
 | Sandbox (path-escape rejection, deny-list hooks) | ✅ live |
 | `os_detect`, `magic_check` (cross-OS routing) | ✅ live (15 tests) |
 | Windows tools: `win_registry_get`, `win_prefetch_parse`, `win_evtx_query`, `win_lnk_parse` | ✅ live (16 tests) |
@@ -168,7 +151,7 @@ mh check                     Quick env probe (exit 0/1).
 | 5 | Evidence dataset documentation | [`docs/dataset-documentation.md`](docs/dataset-documentation.md) |
 | 6 | Accuracy report | [`docs/accuracy-report-template.md`](docs/) — populated per run |
 | 7 | Deployment / setup instructions | this Quickstart + [`bin/mh`](bin/mh) installer |
-| 8 | Agent execution logs (timestamps + tokens) | `cases/<id>/output/chain-of-custody.jsonl` |
+| 8 | Agent execution logs (timestamps + tokens) | `cases/<id>/output/audit.jsonl` |
 
 ## Documentation
 

@@ -28,40 +28,21 @@ docker compose up
 ```
 
 Watch for output in `output/`:
-- `chain-of-custody.jsonl` — append-only audit log (tamper-evident)
+- `audit.jsonl` — plain append-only audit log of every step
 - `findings.json` — structured findings, every one pinned
 - `narrative.md` — investigator-ready prose
 - `accuracy-report.md` — honest FP/FN/hallucination tally
-- `case-<id>.attestation.json` — signed attestation
 
-## Verifying A Run
+## Inspecting An Audit Log
 
-```bash
-python3 -m protocol_sift_mcp.tools.evidence chain_verify \
-    --chain output/chain-of-custody.jsonl
-
-# Verify attestation signature
-python3 scripts/verify_attestation.py \
-    --attestation output/case-001.attestation.json \
-    --pubkey keys/ed25519.pub
-```
-
-## Live Tamper Demo
-
-For the demo video:
+The audit log lives at `output/audit.jsonl`. Inspect with:
 
 ```bash
-# 1. Show clean chain
-python3 -m protocol_sift_mcp.tools.evidence chain_verify --chain output/chain-of-custody.jsonl
-# ✓ Chain valid
-
-# 2. Tamper one entry
-sed -i 's/"confidence":"inferred"/"confidence":"confirmed"/' output/chain-of-custody.jsonl
-
-# 3. Re-verify — fails immediately
-python3 -m protocol_sift_mcp.tools.evidence chain_verify --chain output/chain-of-custody.jsonl
-# ✗ hash mismatch at line N
+head -5 output/audit.jsonl | jq .
+wc -l output/audit.jsonl
 ```
+
+Each line is one event: `session_init`, `evidence_ingest`, `tool_call`, `finding_recorded`, `session_finalize`. Sequence numbers increment monotonically.
 
 ## Replay (Reproducibility)
 
