@@ -52,3 +52,22 @@ def test_agent_message_append(tmp_path: Path) -> None:
     assert e["to_agent"] == "windows-agent"
     assert e["role"] == "dispatch"
     assert e["metadata"]["artifact"] == "/input/NTUSER.DAT"
+
+
+import asyncio
+
+from protocol_sift_mcp.server import call_tool, list_tools
+
+
+def test_mcp_tools_does_not_list_chain_tools() -> None:
+    tools = asyncio.run(list_tools())
+    names = {t.name for t in tools}
+    assert "chain_append" not in names
+    assert "chain_verify" not in names
+    assert "chain_acknowledge_gap" not in names
+
+
+def test_mcp_tools_lists_audit_append() -> None:
+    tools = asyncio.run(list_tools())
+    names = {t.name for t in tools}
+    assert "audit_append" in names

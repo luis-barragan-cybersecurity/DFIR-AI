@@ -8,13 +8,13 @@ primitives are real on day one because they gate everything else.
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
 from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from .tools import audit as au
 from .tools import evidence as ev
 from .tools import finding as fd
 from .tools import macos as mac
@@ -22,7 +22,7 @@ from .tools import parse as ps
 from .tools import windows as win
 
 OUTPUT_PATH = Path(os.environ.get("OUTPUT_PATH", "/output"))
-CHAIN_PATH = OUTPUT_PATH / "chain-of-custody.jsonl"
+AUDIT_PATH = OUTPUT_PATH / "audit.jsonl"
 FINDINGS_PATH = OUTPUT_PATH / "findings.json"
 
 server: Server = Server("protocol-sift")
@@ -41,8 +41,12 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="chain_append",
-            description="Append a chain-of-custody entry. Use sparingly; most events are auto-logged by hooks.",
+            name="audit_append",
+            description=(
+                "Append a tool-call or lifecycle event to the plain audit log. "
+                "Use when an event needs durable record. Most events are auto-logged "
+                "by the PostToolUse hook."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -50,23 +54,6 @@ async def list_tools() -> list[Tool]:
                     "data": {"type": "object"},
                 },
                 "required": ["event", "data"],
-            },
-        ),
-        Tool(
-            name="chain_verify",
-            description="Recompute every chain hash. Returns {ok, problems}.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="chain_acknowledge_gap",
-            description="Record an explicit 'I don't know' with scope + reason. Counts positively in accuracy report.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "scope": {"type": "string"},
-                    "reason": {"type": "string"},
-                },
-                "required": ["scope", "reason"],
             },
         ),
         Tool(
@@ -249,36 +236,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "hash":
         digest = ev.hash_file(Path(arguments["path"]))
         return [TextContent(type="text", text=str(digest))]
-    if name == "chain_append":
-        entry = ev.chain_append(
-            CHAIN_PATH,
+    if name == "audit_append":
+        entry = au.audit_append(
+            AUDIT_PATH,
             event=arguments["event"],
             data=arguments["data"],
         )
         return [TextContent(type="text", text=str(entry))]
-    if name == "chain_verify":
-        ok, problems = ev.chain_verify(CHAIN_PATH)
-        return [
-            TextContent(
-                type="text",
-                text=f"ok={ok} problems={problems}",
-            )
-        ]
-    if name == "chain_acknowledge_gap":
-        entry = ev.chain_append(
-            CHAIN_PATH,
-            event="gap_acknowledged",
-            data={
-                "scope": arguments["scope"],
-                "reason": arguments["reason"],
-                "ts": datetime.now(UTC).isoformat(),
-            },
-        )
-        return [TextContent(type="text", text=str(entry))]
     if name == "finding_record":
         record = fd.finding_record(FINDINGS_PATH, arguments)
-        ev.chain_append(
-            CHAIN_PATH,
+        au.audit_append(
+            AUDIT_PATH,
             event="finding_recorded",
             data={"finding_id": record["finding_id"]},
         )
