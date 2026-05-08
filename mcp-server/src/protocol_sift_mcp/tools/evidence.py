@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 from pathlib import Path
+from typing import Any
 
 from ..sandbox import assert_input_path
 from . import audit
@@ -28,7 +29,7 @@ def hash_file(path: Path, *, chunk_size: int = 1 << 20) -> dict[str, str | int]:
     return {"sha256": sha256.hexdigest(), "sha1": sha1.hexdigest(), "size": size}
 
 
-def ingest_artifact(audit_path: Path, artifact: Path) -> dict:
+def ingest_artifact(audit_path: Path, artifact: Path) -> dict[str, Any]:
     """Hash an evidence file and append an `evidence_ingest` entry to the audit log."""
     artifact = assert_input_path(artifact)
     digest = hash_file(artifact)
