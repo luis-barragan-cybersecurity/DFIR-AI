@@ -105,14 +105,14 @@ def action_word(finding: dict) -> str:
 
 def summarize(case_dir: Path) -> str:
     findings_path = case_dir / "output" / "findings.json"
-    chain_path = case_dir / "output" / "chain-of-custody.jsonl"
+    audit_path = case_dir / "output" / "audit.jsonl"
     if not findings_path.exists():
         return "# No findings yet\n\nThis case has not been triaged.\n"
 
     findings = json.loads(findings_path.read_text())
     artifacts: dict[str, dict] = {}
-    if chain_path.exists():
-        for line in chain_path.read_text().splitlines():
+    if audit_path.exists():
+        for line in audit_path.read_text().splitlines():
             try:
                 e = json.loads(line)
             except json.JSONDecodeError:
@@ -128,7 +128,7 @@ def summarize(case_dir: Path) -> str:
     out: list[str] = []
     out.append(f"# Plain-English Summary — Case `{case_id}`\n")
     out.append(f"_Generated {when} — no AI, no tokens. Reads `findings.json` + "
-               f"`chain-of-custody.jsonl` and translates to plain English._\n")
+               f"`audit.jsonl` and translates to plain English._\n")
 
     out.append("## Quick Read\n")
     out.append(f"- **Files we looked at:** {len(artifacts)}")
@@ -177,20 +177,9 @@ def summarize(case_dir: Path) -> str:
                f"finding IDs, MACB timestamps): `narrative.md`")
     out.append(f"- **Honest accuracy scoring** (true positives, false positives, "
                f"missed items, hallucinations caught): `accuracy-report.md`")
-    out.append(f"- **Audit log of every step the agent took** (cryptographically "
-               f"linked, tamper-evident): `chain-of-custody.jsonl`")
+    out.append(f"- **Plain audit log of every step the agent took**: `audit.jsonl`")
     out.append(f"- **Structured findings** (machine-readable, every claim pinned "
-               f"to specific bytes in evidence): `findings.json`")
-    out.append(f"- **Signed attestation** (ed25519 signature proving the report "
-               f"came from this run): `case-{case_id}.attestation.json`\n")
-
-    out.append("## How To Verify Nothing Has Been Tampered With\n")
-    out.append("```bash")
-    out.append(f"./bin/mh verify {case_id}")
-    out.append("```")
-    out.append("If the chain is valid, every byte of every audit entry has the "
-               "exact hash it had when written. Editing any line — even one "
-               "character — breaks the chain and is detected.\n")
+               f"to specific bytes in evidence): `findings.json`\n")
 
     return "\n".join(out)
 

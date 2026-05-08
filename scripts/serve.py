@@ -261,12 +261,8 @@ def case_card(case_dir: Path) -> str:
         pills.append(f'<a class="pill" href="/case/{cid}/accuracy-report.md">accuracy</a>')
     if has("findings.json"):
         pills.append(f'<a class="pill" href="/case/{cid}/findings.json">findings</a>')
-    chain_name = "chain-of-custody.jsonl" if has("chain-of-custody.jsonl") else "chain.jsonl"
-    if has(chain_name):
-        pills.append(f'<a class="pill warn" href="/case/{cid}/{chain_name}">chain</a>')
-    attestation = list(out.glob("*.attestation.json"))
-    if attestation:
-        pills.append(f'<a class="pill" href="/case/{cid}/{attestation[0].name}">attestation</a>')
+    if has("audit.jsonl"):
+        pills.append(f'<a class="pill warn" href="/case/{cid}/audit.jsonl">audit</a>')
 
     inputs = case_dir / "input"
     in_count = sum(1 for _ in inputs.rglob("*") if _.is_file()) if inputs.exists() else 0
@@ -370,18 +366,9 @@ class Handler(BaseHTTPRequestHandler):
                 active = "active" if rel == fname else ""
                 tabs.append(f'<a class="tab {active}" href="/case/{case_id}/{fname}">{label}</a>')
 
-        chain_name = None
-        for c in ("chain-of-custody.jsonl", "chain.jsonl"):
-            if (out / c).exists():
-                chain_name = c; break
-        if chain_name:
-            active = "active" if rel == chain_name else ""
-            tabs.append(f'<a class="tab {active}" href="/case/{case_id}/{chain_name}">Chain</a>')
-
-        attestations = list(out.glob("*.attestation.json"))
-        if attestations:
-            active = "active" if rel == attestations[0].name else ""
-            tabs.append(f'<a class="tab {active}" href="/case/{case_id}/{attestations[0].name}">Attestation</a>')
+        if (out / "audit.jsonl").exists():
+            active = "active" if rel == "audit.jsonl" else ""
+            tabs.append(f'<a class="tab {active}" href="/case/{case_id}/audit.jsonl">Audit</a>')
 
         if rel.endswith(".md"):
             content = render_md_file(target)

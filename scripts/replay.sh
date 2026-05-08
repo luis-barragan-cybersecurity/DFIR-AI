@@ -26,8 +26,7 @@ echo ">> Output:   $OUTPUT_PATH"
 claude code --skills "$PROJECT_DIR/.claude/skills/triage-orchestrator"
 
 echo ""
-echo ">> Verifying chain..."
-python3.11 -m protocol_sift_mcp.tools.evidence chain_verify --chain "$OUT_DIR/chain-of-custody.jsonl"
+echo ">> Audit log: $OUT_DIR/audit.jsonl ($(wc -l <"$OUT_DIR/audit.jsonl" 2>/dev/null || echo 0) entries)"
 
 if [[ -f "$CORPUS_DIR/ground-truth.json" ]]; then
     echo ">> Diffing findings vs ground truth..."

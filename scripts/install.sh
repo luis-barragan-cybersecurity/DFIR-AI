@@ -19,12 +19,6 @@ echo ">> Installing protocol-sift-mcp (core + dev + forensics)"
 cd "$(dirname "$0")/../mcp-server"
 uv pip install --system -e ".[dev,forensics]"
 
-echo ">> Generating ed25519 signing keypair (if missing)"
-KEYS_DIR="$(cd "$(dirname "$0")/.." && pwd)/keys"
-if [[ ! -f "$KEYS_DIR/ed25519.priv" ]]; then
-    python3.11 -m protocol_sift_mcp.tools.evidence keygen --out-dir "$KEYS_DIR"
-fi
-
 echo ">> Done. Next:"
 echo "  export ANTHROPIC_API_KEY=..."
 echo "  export CASE_ID=demo-001"
