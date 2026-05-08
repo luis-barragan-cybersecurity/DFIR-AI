@@ -1,13 +1,13 @@
 ---
 name: gap-acknowledgment
-description: Discipline for acknowledging what we don't know. Calling `chain_acknowledge_gap` is a strength signal — judges score honesty positively and detect inflated claims fast. This skill teaches when to refuse vs. when to assert.
+description: Discipline for acknowledging what we don't know. Calling out gaps explicitly via a `confidence='unknown'` finding is a strength signal — judges score honesty positively and detect inflated claims fast. This skill teaches when to refuse vs. when to assert.
 ---
 
 # Gap Acknowledgment
 
 "I don't know" is a valid output. Use it.
 
-## When To Call `chain_acknowledge_gap`
+## When To Acknowledge a Gap
 
 | Situation | Action |
 |---|---|
@@ -20,19 +20,29 @@ description: Discipline for acknowledging what we don't know. Calling `chain_ack
 
 ## When NOT To Acknowledge
 
-- Don't flood the chain with trivial "couldn't determine X" entries — gaps should be substantive
+- Don't flood the audit log with trivial "couldn't determine X" entries — gaps should be substantive
 - Don't acknowledge to dodge work; if the evidence is available, do the analysis
 
 ## Format
 
+Call `finding_record` with `confidence='unknown'`, a single pin pointing at the artifact you couldn't conclude on, and a claim describing the gap:
+
 ```python
-mcp__protocol_sift__chain_acknowledge_gap(
-    scope="cridex.exe network destinations",
-    reason="netscan returned no entries for PID 1484; this could mean (a) connections were closed before snapshot, (b) memory was paged out, or (c) the process used a covert channel not visible to netscan. Insufficient evidence to choose."
+mcp__protocol_sift__finding_record(
+    finding_id="GAP-001",
+    claim="Cannot determine cridex.exe network destinations: netscan returned no entries for PID 1484. Possible causes: (a) connections closed before snapshot, (b) memory paged out, (c) covert channel not visible to netscan. Insufficient evidence to choose.",
+    confidence="unknown",
+    pins=[{
+        "artifact": "/input/memory.raw",
+        "tool": "memory_volatility",
+        "locator": {"type": "memory_vad", "value": "PID:1484"},
+        "raw_excerpt": "netscan: 0 records for PID 1484",
+        "captured_at": "<iso8601>"
+    }]
 )
 ```
 
-The `reason` field is read by the accuracy-report skill and surfaced in the final report. Make it specific.
+The `claim` field is read by the accuracy-report skill and surfaced in the final report. Make it specific.
 
 ## Demo Value
 

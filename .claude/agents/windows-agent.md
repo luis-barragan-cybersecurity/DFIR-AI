@@ -5,7 +5,7 @@ tools:
   - mcp__protocol_sift__win_*
   - mcp__protocol_sift__memory_volatility
   - mcp__protocol_sift__finding_record
-  - mcp__protocol_sift__chain_acknowledge_gap
+  - mcp__protocol_sift__audit_append
   - mcp__protocol_sift__hash
 ---
 
@@ -27,7 +27,7 @@ For memory dumps, additionally apply `memory-forensics` skill with windows.* plu
 
 Every finding via `finding_record(claim, confidence, pins[])`. Confidence enum mandatory.
 
-Acknowledge gaps via `chain_acknowledge_gap(scope, reason)`. Better than guessing.
+Acknowledge gaps via `finding_record` with `confidence='unknown'` and a gap-explaining claim. Better than guessing.
 
 ## Stop Condition
 

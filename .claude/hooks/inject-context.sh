@@ -11,7 +11,7 @@ cat <<EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "UserPromptSubmit",
-    "additionalContext": "Active case: ${CASE_ID}\nEvidence path (read-only): ${EVIDENCE_PATH}\nOutput path (write): ${OUTPUT_PATH}\nTrust contract: every finding requires evidence pin; finding_record rejects un-pinned. Use chain_acknowledge_gap when uncertain."
+    "additionalContext": "Active case: ${CASE_ID}\nEvidence path (read-only): ${EVIDENCE_PATH}\nOutput path (write): ${OUTPUT_PATH}\nTrust contract: every finding requires evidence pin; finding_record rejects un-pinned. Use confidence='unknown' with a gap-explaining claim when uncertain."
   }
 }
 EOF

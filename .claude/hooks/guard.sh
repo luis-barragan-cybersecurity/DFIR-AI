@@ -2,7 +2,7 @@
 # PreToolUse hook — enforce the trust contract before tool execution:
 #   - reject Bash, Write to /input, network egress
 #   - reject finding_record without pins
-#   - log intent to the chain
+#   - log intent to the audit log
 set -euo pipefail
 
 INPUT_JSON=$(cat)
@@ -34,7 +34,7 @@ if [[ "$TOOL_NAME" == *"finding_record"* ]]; then
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "finding_record requires at least one pin. Use chain_acknowledge_gap if you cannot pin this claim."
+    "permissionDecisionReason": "finding_record requires at least one pin. Use confidence='unknown' with a gap-explaining claim if you cannot pin this claim."
   }
 }
 EOF
