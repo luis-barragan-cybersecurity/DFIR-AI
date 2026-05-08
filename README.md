@@ -159,7 +159,7 @@ mh check                     Quick env probe (exit 0/1).
 - [`docs/usage.md`](docs/usage.md) — detailed usage walkthrough
 - [`docs/development.md`](docs/development.md) — pre-commit + CI workflow
 - [`docs/dataset-documentation.md`](docs/dataset-documentation.md) — evidence corpus + ground truth
-- [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — 51-day delivery plan
+- [`docs/superpowers/plans/2026-05-07-find-evil-master.md`](docs/superpowers/plans/2026-05-07-find-evil-master.md) — current master spec (supersedes earlier plan)
 
 ## License
 

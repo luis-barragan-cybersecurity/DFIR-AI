@@ -53,7 +53,10 @@ class Finding(BaseModel):
     @classmethod
     def at_least_one_pin(cls, v: list[Pin]) -> list[Pin]:
         if len(v) < 1:
-            raise ValueError("Finding requires at least one pin (use confidence='unknown' with a gap-explaining claim instead)")
+            raise ValueError(
+                "Finding requires at least one pin "
+                "(use confidence='unknown' with a gap-explaining claim instead)"
+            )
         return v
 
 
