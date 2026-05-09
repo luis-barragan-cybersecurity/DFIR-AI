@@ -149,6 +149,21 @@ cmd_doctor() {
         warn "mh-orchestrate missing — run: mh init"
     fi
 
+    # ISF symbol cache check (warn-only — absence does not fail doctor)
+    local isf_path="${MH_HOME}/corpus/dfrws-2008-memory/symbols/linux/2.6.18-8.1.15.el5_64.json.xz"
+    if [[ -f "$isf_path" ]]; then
+        ok "ISF symbol cache — $(wc -c <"$isf_path" 2>/dev/null | tr -d ' ' || echo '?') bytes vendored"
+    else
+        warn "ISF symbols missing at $isf_path — Volatility linux.* plugins will return empty (run: scripts/fetch-isf-symbols.sh)"
+    fi
+
+    # Docker presence check (info-only — Docker is optional)
+    if command -v docker >/dev/null 2>&1; then
+        info "Docker — $(docker --version 2>&1 | head -1) (optional; host install does not require it)"
+    else
+        info "Docker — not on PATH (optional; install for the containerized deployment path — see docs/deployment.md)"
+    fi
+
     echo ""
     if [[ $errors -eq 0 ]]; then
         ok "All critical checks passed."
@@ -658,6 +673,15 @@ ${BOLD}WORKFLOW${NC}
     3. mkdir -p cases/case-001/input
        cp /path/to/evidence/* cases/case-001/input/
     4. mh run case-001                            # autonomous triage
+
+${BOLD}DEPLOYMENT${NC} (Sub-Plan 05)
+    scripts/install-sift.sh --check               Report prereq status (no changes)
+    scripts/install-sift.sh --install             Bootstrap host environment
+    docker compose up                             Local-build container path
+    docker pull ghcr.io/<owner>/memoryhound:sub-plan-05-complete
+                                                  Pre-built image (after tag push)
+
+    See docs/deployment.md for the full matrix.
 
 ${BOLD}DOCS${NC}
     docs/architecture.md      — full design
