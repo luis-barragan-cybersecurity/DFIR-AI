@@ -14,4 +14,12 @@ if [[ ! -x "$MH_PY" ]]; then
     exit 1
 fi
 
+# Volatility 3 ISF symbol path — vendored at corpus/dfrws-2008-memory/symbols/
+# (Sub-Plan 05). Volatility 3 (>=2.4) walks the symbol dir and reads
+# xz-compressed JSON tables directly; tools/memory.py forwards the env
+# to the vol subprocess via env=os.environ.copy().
+if [[ -d "${MH_HOME}/corpus/dfrws-2008-memory/symbols" ]]; then
+    export VOLATILITY_SYMBOL_PATH="${MH_HOME}/corpus/dfrws-2008-memory/symbols"
+fi
+
 exec "$MH_PY" -m protocol_sift_mcp.server "$@"

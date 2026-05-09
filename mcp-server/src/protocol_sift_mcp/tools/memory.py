@@ -21,6 +21,7 @@ exception type to handle.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from typing import Any
@@ -106,6 +107,10 @@ def memory_volatility(
     if args:
         cmd.extend(args)
 
+    # Pass env explicitly (rather than relying on subprocess.run's implicit
+    # inherit) so the contract is testable and so VOLATILITY_SYMBOL_PATH —
+    # exported by bin/mh-mcp-server when the vendored ISF symbol dir
+    # exists — actually reaches the vol child. SP05/T2.
     try:
         proc = subprocess.run(  # noqa: S603 — cmd[0] is shutil.which result, args are allowlisted plugin + sandbox-asserted path
             cmd,
@@ -113,6 +118,7 @@ def memory_volatility(
             text=True,
             timeout=timeout_sec,
             check=False,
+            env=os.environ.copy(),
         )
     except subprocess.TimeoutExpired as exc:
         raise MemoryToolError(
