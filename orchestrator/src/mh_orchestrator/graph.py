@@ -1,12 +1,24 @@
 """LangGraph StateGraph for MemoryHound.
 
-Skeleton topology:  session_init -> claude_dispatch -> session_finalize -> END
-Sub-Plan 03 will fan this out per IR_FRAMEWORKS_REFERENCE.md §11.2.
+Full §11.2 14-IR-node topology with five §11.3 conditional edges:
+  session_init → detect → triage
+  triage --[route_after_triage]--> {suppress | declare_incident}
+  declare_incident → analyze
+  analyze --[route_after_analyze]--> {analyze | attack_tag}
+  attack_tag → kill_chain → d3fend_recommend → contain
+  contain --[route_after_contain]--> {human_in_loop | eradicate}
+  human_in_loop → eradicate
+  eradicate --[route_after_eradicate]--> {contain | recover}
+  recover --[route_after_recover]--> {contain | lessons_learned}
+  lessons_learned → remediation → verifier_pass → session_finalize → END
+  suppress → session_finalize → END
 
-The `route_after_*` functions in this module are pure conditional-edge
-selectors per IR_FRAMEWORKS_REFERENCE.md §11.3 — each maps an IncidentState
-to the next-node key. They are added in Task 11; the LangGraph wiring lands
-in Task 12.
+verifier_pass placement: locked Sub-Plan 03 decision is "single global
+Verifier pass after analyze loop terminates" — meaning AFTER all phases
+complete, between remediation and session_finalize. This supersedes any
+contrary §11.2 prose.
+
+The `route_after_*` functions are pure conditional-edge selectors per §11.3.
 """
 from __future__ import annotations
 
@@ -19,7 +31,11 @@ from . import blast_radius
 from .nodes import NODES
 from .state import IncidentState
 
-DEFAULT_RECURSION_LIMIT = 25
+# Default recursion limit: 50 leaves headroom above the 15-node happy path
+# so bounded loop-back retries (eradicate→contain, recover→contain) don't
+# trip LangGraph's safety guard on first iteration. Override per-invocation
+# via build_graph(recursion_limit=N) or env MH_LG_RECURSION_LIMIT.
+DEFAULT_RECURSION_LIMIT = 50
 
 # Severity values that indicate "no real incident" when no findings surfaced.
 # Triage emits a `_findings` list; an empty list combined with low/informational
@@ -107,17 +123,79 @@ def route_after_recover(state: IncidentState) -> str:
     return "lessons_learned"
 
 
-def build_graph(recursion_limit: int = DEFAULT_RECURSION_LIMIT) -> Any:
-    """Compile the skeleton graph. Recursion limit is bound at invoke-time
-    via .with_config; this caps node iterations as required by the hackathon
-    multi-agent submission rules."""
+def _resolve_recursion_limit(arg: int | None) -> int:
+    """Resolve recursion limit: explicit arg > MH_LG_RECURSION_LIMIT > default.
+
+    Env var lets ops bump the cap without code changes if a particularly
+    pathological case keeps hitting bounded retries.
+    """
+    if arg is not None:
+        return arg
+    env = os.environ.get("MH_LG_RECURSION_LIMIT")
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    return DEFAULT_RECURSION_LIMIT
+
+
+def build_graph(recursion_limit: int | None = None) -> Any:
+    """Compile the full §11.2 graph and bind recursion_limit at invoke-time
+    via .with_config.
+
+    The recursion_limit caps total node iterations as required by the
+    hackathon multi-agent submission rules. With bounded loop-back retries
+    (eradicate→contain, recover→contain) and the analyze RCA loop, default
+    50 gives ~3x headroom over the 15-node happy path.
+    """
+    limit = _resolve_recursion_limit(recursion_limit)
     g: StateGraph = StateGraph(IncidentState)
-    g.add_node("session_init", NODES["session_init"])
-    g.add_node("claude_dispatch", NODES["claude_dispatch"])
-    g.add_node("session_finalize", NODES["session_finalize"])
+
+    # Register all §11.2 nodes from the registry. Skip claude_dispatch — it
+    # was the Sub-Plan 02 skeleton placeholder and is no longer wired (T13
+    # deletes the file). Any future "framing-only" node would be filtered
+    # the same way.
+    for name, fn in NODES.items():
+        g.add_node(name, fn)
+
     g.set_entry_point("session_init")
-    g.add_edge("session_init", "claude_dispatch")
-    g.add_edge("claude_dispatch", "session_finalize")
+
+    # Linear edges (deterministic single successor per §11.2)
+    g.add_edge("session_init", "detect")
+    g.add_edge("detect", "triage")
+    g.add_edge("declare_incident", "analyze")
+    g.add_edge("attack_tag", "kill_chain")
+    g.add_edge("kill_chain", "d3fend_recommend")
+    g.add_edge("d3fend_recommend", "contain")
+    g.add_edge("human_in_loop", "eradicate")
+    g.add_edge("lessons_learned", "remediation")
+    g.add_edge("remediation", "verifier_pass")
+    g.add_edge("verifier_pass", "session_finalize")
+    g.add_edge("suppress", "session_finalize")
     g.add_edge("session_finalize", END)
+
+    # §11.3 conditional edges — five gates that govern branch + loop control.
+    g.add_conditional_edges(
+        "triage", route_after_triage,
+        {"suppress": "suppress", "declare_incident": "declare_incident"},
+    )
+    g.add_conditional_edges(
+        "analyze", route_after_analyze,
+        {"analyze": "analyze", "attack_tag": "attack_tag"},
+    )
+    g.add_conditional_edges(
+        "contain", route_after_contain,
+        {"human_in_loop": "human_in_loop", "eradicate": "eradicate"},
+    )
+    g.add_conditional_edges(
+        "eradicate", route_after_eradicate,
+        {"contain": "contain", "recover": "recover"},
+    )
+    g.add_conditional_edges(
+        "recover", route_after_recover,
+        {"contain": "contain", "lessons_learned": "lessons_learned"},
+    )
+
     compiled = g.compile()
-    return compiled.with_config({"recursion_limit": recursion_limit})
+    return compiled.with_config({"recursion_limit": limit})

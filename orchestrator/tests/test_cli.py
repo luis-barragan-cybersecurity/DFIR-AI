@@ -10,8 +10,10 @@ def test_cli_run_dry_run(tmp_path, monkeypatch):
     (case_dir / "output").mkdir()
 
     from mh_orchestrator.cli import main
+    # Recursion limit must comfortably cover the full §11.2 walk
+    # (15 nodes happy path + bounded retries).
     rc = main(["run", "case-001", "--cases-dir", str(tmp_path / "cases"),
-               "--recursion-limit", "5"])
+               "--recursion-limit", "50"])
     assert rc == 0
     assert (case_dir / "output" / "state.json").exists()
     assert (case_dir / "output" / "agent_messages.jsonl").exists()
