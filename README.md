@@ -56,6 +56,28 @@ Output lands in `cases/case-001/output/`:
 | `narrative.md` | Investigator-ready prose report |
 | `accuracy-report.md` | Honest FP / FN / hallucination tally |
 
+### Skeleton orchestrator (Sub-Plan 02)
+
+LangGraph state-machine entry point. Coexists with `mh run` (skill-driven path) during the Sub-Plan 02→03 transition.
+
+```bash
+mh init                       # ensures both mcp-server and orchestrator installed
+mh orchestrate case-001       # runs LangGraph: session_init → claude_dispatch → session_finalize
+cat cases/case-001/output/state.json
+cat cases/case-001/output/agent_messages.jsonl
+```
+
+Outputs land in `cases/<id>/output/`:
+
+| File | Purpose |
+|---|---|
+| `state.json` | Final IncidentState snapshot (Pydantic-serialized) |
+| `state.history.jsonl` | One snapshot per node exit |
+| `agent_messages.jsonl` | Inter-agent dispatch + response messages |
+| `audit.jsonl` | Plain append-only event log (existing) |
+
+Set `MH_NO_CLAUDE=1` to short-circuit the `claude_dispatch` node for CI / no-token testing.
+
 ## See It Work In 60 Seconds (No API Key Needed)
 
 The demo proves the end-to-end pipeline without spending a token:

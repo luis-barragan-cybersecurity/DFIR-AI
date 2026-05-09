@@ -56,6 +56,27 @@ A plain append-only `audit.jsonl` records every step (session_init, evidence_ing
 
 See [`SYNTHESIS_FOR_MEMORYHOUND.md`](../../sans-docs/SYNTHESIS_FOR_MEMORYHOUND.md) for full source-derivation.
 
+## LangGraph Layer (Sub-Plan 02)
+
+Above the MCP server, MemoryHound runs a LangGraph state machine. Each IR phase is a node; each node mutates a shared `IncidentState` (mirrors `Plans/IR_FRAMEWORKS_REFERENCE.md` §11.1) and persists a checkpoint to `output/state.json` plus a snapshot line to `output/state.history.jsonl`. Inter-agent dispatch and response messages are written to `output/agent_messages.jsonl` (required for hackathon multi-agent submissions).
+
+Skeleton topology (Sub-Plan 02):
+
+```
+session_init → claude_dispatch → session_finalize → END
+```
+
+Sub-Plan 03 fans the skeleton out into the full PICERL/CSF 2.0 graph (detect → triage → analyze → contain → eradicate → recover → lessons), per `Plans/IR_FRAMEWORKS_REFERENCE.md` §11.2.
+
+Recursion limit is enforced at graph compile time (`compiled.with_config({"recursion_limit": N})`). Default 25 — bounds runaway loops, satisfying the hackathon "max-iteration cap" requirement.
+
+The `claude_dispatch` node invokes a named Claude Code subagent (e.g., `WindowsAgent`) via subprocess (`claude -p --output-format stream-json --mcp-config <cfg> --allowedTools <list>`). Stream-json output is parsed line-by-line for tool-use observability and final result extraction.
+
+Entry points:
+- Python: `from mh_orchestrator.graph import build_graph; build_graph().invoke(state)`
+- CLI: `mh-orchestrate run <case-id>`
+- Shell: `bin/mh orchestrate <case-id>` (wraps the CLI, integrates with `mh init` venv)
+
 ## Data Flow Per Case
 
 1. Operator drops evidence into `/input/` (read-only mount)
