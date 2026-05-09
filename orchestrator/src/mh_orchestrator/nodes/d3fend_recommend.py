@@ -1,14 +1,16 @@
 """d3fend_recommend node — D3FEND countermeasure recommendation.
 
-Wraps the d3fend_stub.recommend() helper. Sub-Plan 04 will swap the stub for
-real D3FEND knowledge-graph queries; until then every call appends an audit
-warning so the deferral is visible in production logs.
+Resolves ATT&CK technique IDs to D3FEND countermeasures via the static
+crosswalk in :mod:`mh_orchestrator.d3fend_crosswalk`. Unknown techniques
+emit ``d3fend_crosswalk_miss`` audit events from inside the crosswalk so
+coverage gaps surface in the audit log.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from .. import d3fend_stub, picerl
+from .. import picerl
+from ..d3fend_crosswalk import lookup_all
 from ..persistence import append_history, write_checkpoint
 from ..state import IncidentState
 
@@ -25,7 +27,7 @@ def run(state: IncidentState) -> IncidentState:
     if "d3fend_recommendations" not in state:
         state["d3fend_recommendations"] = []
 
-    new_recs = d3fend_stub.recommend(state, techniques)
+    new_recs = lookup_all(state, techniques)
     state["d3fend_recommendations"].extend(new_recs)
 
     state["phase"] = "analyze"
@@ -41,7 +43,7 @@ def run(state: IncidentState) -> IncidentState:
     emit_message(
         state, from_agent="orchestrator", to_agent="orchestrator",
         role="lifecycle",
-        content=f"d3fend_recommend: +{len(new_recs)} countermeasures (stub-backed)",
+        content=f"d3fend_recommend: +{len(new_recs)} countermeasures (crosswalk)",
     )
     write_checkpoint(state, out)
     append_history(state, out, node=NODE_NAME)
