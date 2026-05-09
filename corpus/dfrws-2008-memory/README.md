@@ -70,8 +70,48 @@ A high-fidelity ground-truth list (winning Cohen/Collett/Walters submission iden
 
 The structured `ground-truth.json` is currently a **skeleton** — `findings`, `attack_techniques`, and `d3fend_recommendations` are populated empty `[]`. Sub-Plan 06 (accuracy harness) is responsible for populating these against the canonical winning submission report.
 
+## Symbol Cache (Sub-Plan 05)
+
+Volatility 3 needs an Intermediate Symbol File (ISF) for the source
+kernel to produce structured output. Without it, `linux.*` plugins
+return empty rows. This fixture vendors one:
+
+- **File:** `symbols/linux/2.6.18-8.1.15.el5_64.json.xz` (~190 KB, 27,928 symbols)
+- **Source:** Volatility Foundation sample-symbols bundle
+  (`https://downloads.volatilityfoundation.org/volatility3/symbols/linux.zip`,
+  bundle entry `linux/Centos_2.6.18-8.1.15.el5_2.6.18-8.1.15.el5_x64.json.xz`)
+- **Verification:** `shasum -a 256 -c symbols/SHA256SUMS`
+- **License:** see `symbols/LICENSE-symbols.md`
+
+The MCP-server `memory_volatility` tool exports `VOLATILITY_SYMBOL_PATH`
+to this directory at launch time (Sub-Plan 05 Task 2). To verify locally:
+
+```bash
+PYTHONPATH=mcp-server/src python -c "
+from protocol_sift_mcp.tools.memory import memory_volatility
+rows = memory_volatility('corpus/dfrws-2008-memory/input/memory.raw', 'linux.pslist')
+print(f'rows={len(rows)}')
+"
+```
+
+Refresh from upstream (idempotent):
+
+```bash
+MH_REFRESH_SYMBOLS=1 bash scripts/fetch-isf-symbols.sh
+```
+
+To verify only (no download):
+
+```bash
+bash scripts/fetch-isf-symbols.sh
+```
+
+Regeneration from CentOS 5 kernel-debuginfo RPM is documented in
+`symbols/LICENSE-symbols.md` (out-of-scope for hackathon).
+
 ## References
 
 - DFRWS 2008 Challenge details: https://github.com/dfrws/dfrws2008-challenge/blob/master/details/README.md
 - Winning submission (Cohen, Collett, Walters): https://github.com/dfrws/dfrws2008-challenge/tree/master/results/Cohen_Collet_Walters
 - Volatility Linux profiles: https://github.com/volatilityfoundation/volatility/wiki/Linux
+- Volatility Foundation sample symbols: https://downloads.volatilityfoundation.org/volatility3/symbols/linux.zip
