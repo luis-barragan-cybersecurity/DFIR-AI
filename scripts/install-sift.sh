@@ -168,10 +168,204 @@ run_check() {
     return 1
 }
 
+# ─── privilege helpers ───────────────────────────────────────────────────────
+
+check_sudo_or_root() {
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then return 0; fi
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then return 0; fi
+    return 1
+}
+
+run_root() {
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+# ─── install pipeline ────────────────────────────────────────────────────────
+
 run_install() {
-    info "install pipeline (NYI — Sub-Plan 05 Task 5)"
-    info "Task 5 implements: APT prereqs, Node 18 + claude CLI, mh init, ISF fetch"
-    return 0
+    local os
+    os=$(detect_os)
+    info "MemoryHound install — OS=$os, forensics=$WITH_FORENSICS, symbols=$WITH_SYMBOLS"
+
+    case "$os" in
+        sift|ubuntu|debian)
+            install_apt_prereqs
+            ;;
+        fedora|rhel|centos|rocky)
+            install_dnf_prereqs
+            ;;
+        macos)
+            warn "macOS detected — skipping APT block."
+            warn "On macOS install python@3.12, jq, libmagic via 'brew install python@3.12 jq libmagic' if missing."
+            ;;
+        *)
+            warn "OS '$os' not auto-supported — manual prereq install required."
+            ;;
+    esac
+
+    install_node_and_claude_cli "$os"
+    install_memoryhound_via_mh_init
+    if (( WITH_SYMBOLS )); then
+        install_isf_symbols
+    fi
+    final_doctor_check
+}
+
+install_apt_prereqs() {
+    info "APT prereqs (Debian/Ubuntu/SIFT)"
+    if ! check_sudo_or_root; then
+        if [[ "${MH_INSTALL_NO_SUDO:-0}" == "1" ]]; then
+            warn "MH_INSTALL_NO_SUDO=1 — skipping APT block"
+            return 0
+        fi
+        fail "APT install needs sudo or root; re-run with sudo or set MH_INSTALL_NO_SUDO=1"
+        exit 1
+    fi
+    # Idempotency: refresh apt cache only if older than 60s
+    if [[ -d /var/lib/apt/lists ]]; then
+        local age now
+        age=$(stat -c %Y /var/lib/apt/lists 2>/dev/null || echo 0)
+        now=$(date +%s)
+        if (( now - age > 60 )); then
+            run_root apt-get update -qq || warn "apt-get update returned non-zero — continuing"
+        else
+            info "apt cache fresh — skipping update"
+        fi
+    fi
+    if ! run_root apt-get install -y --no-install-recommends \
+            python3.11 python3.11-venv python3-pip git curl ca-certificates \
+            jq unzip libmagic1; then
+        fail "APT install failed"
+        exit 1
+    fi
+    ok "APT prereqs installed"
+}
+
+install_dnf_prereqs() {
+    info "DNF prereqs (Fedora/RHEL family — best-effort)"
+    if ! check_sudo_or_root; then
+        warn "DNF install needs sudo or root — skipping (pip steps will still try)"
+        return 0
+    fi
+    run_root dnf install -y python3.11 python3-pip git curl jq unzip file-libs || \
+        warn "DNF install partial/failed — continuing"
+    ok "DNF prereqs attempted"
+}
+
+install_node_and_claude_cli() {
+    local os="$1"
+    if command -v node >/dev/null 2>&1; then
+        local raw v_major
+        raw=$(node --version 2>&1 | tr -d 'v')
+        v_major=${raw%%.*}
+        if (( v_major >= 18 )); then
+            ok "node v$raw — already satisfied"
+        else
+            warn "node v$raw < 18; upgrading via NodeSource"
+            install_node_via_nodesource "$os"
+        fi
+    else
+        case "$os" in
+            sift|ubuntu|debian)
+                install_node_via_nodesource "$os"
+                ;;
+            fedora|rhel|centos|rocky)
+                if check_sudo_or_root; then
+                    run_root dnf install -y nodejs || warn "DNF nodejs install failed"
+                else
+                    warn "node missing and no sudo — skipping"
+                fi
+                ;;
+            macos)
+                warn "macOS: install node via 'brew install node@18' manually"
+                return 0
+                ;;
+            *)
+                warn "node not installed — manual install required"
+                return 0
+                ;;
+        esac
+    fi
+
+    if command -v claude >/dev/null 2>&1; then
+        ok "claude CLI — $(command -v claude)"
+    else
+        info "installing @anthropic-ai/claude-code via npm"
+        if command -v npm >/dev/null 2>&1; then
+            if ! run_root npm install -g @anthropic-ai/claude-code; then
+                warn "npm install failed — install claude CLI manually"
+            else
+                ok "claude CLI installed"
+            fi
+        else
+            warn "npm not on PATH — claude CLI install skipped"
+        fi
+    fi
+}
+
+install_node_via_nodesource() {
+    local os="$1"
+    if ! check_sudo_or_root; then
+        warn "NodeSource needs sudo — node install skipped"
+        return 0
+    fi
+    info "fetching NodeSource setup_18.x"
+    if ! run_root bash -c 'curl -fsSL https://deb.nodesource.com/setup_18.x | bash -'; then
+        warn "NodeSource fetch failed"
+        return 1
+    fi
+    if ! run_root apt-get install -y nodejs; then
+        warn "apt-get install nodejs failed"
+        return 1
+    fi
+    ok "node installed: $(node --version 2>&1)"
+}
+
+install_memoryhound_via_mh_init() {
+    info "delegating to bin/mh init (venv + pip install)"
+    local mh_init_args=()
+    if (( WITH_FORENSICS )); then
+        mh_init_args+=("--with-forensics")
+    fi
+    if ! "${REPO_ROOT}/bin/mh" init "${mh_init_args[@]}"; then
+        fail "mh init failed"
+        exit 1
+    fi
+    ok "mh init complete"
+}
+
+install_isf_symbols() {
+    info "verifying / fetching ISF symbols"
+    local fetcher="${SCRIPT_DIR}/fetch-isf-symbols.sh"
+    if [[ ! -x "$fetcher" ]]; then
+        warn "fetch-isf-symbols.sh missing or not executable — skipping"
+        return 0
+    fi
+    if "$fetcher" --check >/dev/null 2>&1; then
+        ok "vendored ISF symbols present + sha256-correct"
+        return 0
+    fi
+    info "ISF symbols missing or corrupt — refreshing from upstream"
+    if ! MH_REFRESH_SYMBOLS=1 "$fetcher"; then
+        warn "ISF refresh failed — continuing without"
+        return 0
+    fi
+    ok "ISF symbols refreshed"
+}
+
+final_doctor_check() {
+    info "running 'mh doctor' to verify install"
+    if "${REPO_ROOT}/bin/mh" doctor; then
+        ok "install complete — mh doctor passes"
+        info "next step: ./bin/mh demo"
+        return 0
+    fi
+    warn "mh doctor reported issues — review output above"
+    return 1
 }
 
 print_help() {
