@@ -1,25 +1,60 @@
+# MemoryHound — local-build compose file (Sub-Plan 05).
+#
+# Usage:
+#   ANTHROPIC_API_KEY=sk-ant-... docker compose up
+#
+#   With auth via mounted ~/.claude (judges who already ran `claude /login`):
+#     docker compose --profile claude-mount up
+#
+# Pre-built image alternative:
+#   docker pull ghcr.io/<owner>/memoryhound:sub-plan-05-complete
+#   docker run --rm -e ANTHROPIC_API_KEY=$KEY \
+#              -v "$PWD/cases:/work/cases" \
+#              ghcr.io/<owner>/memoryhound:sub-plan-05-complete \
+#              orchestrate <case-id>
+#
+# The image runs as hound:1000. Cases are bind-mounted at /work/cases (which
+# is symlinked from $MH_HOME/cases inside the image) so the orchestrator
+# writes findings, narrative, and accuracy-report back to the host without
+# any chown gymnastics — provided your host UID is 1000, or you adjust the
+# `user:` line below.
+
 services:
   memoryhound:
     build:
       context: .
       dockerfile: Dockerfile
-    image: memoryhound:dev
-    container_name: memoryhound
+      target: runtime
+      args:
+        MH_VERSION: ${MH_VERSION:-dev}
+    image: memoryhound:${MH_VERSION:-dev}
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - CASE_ID=${CASE_ID:-demo-001}
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      MH_NO_CLAUDE: "${MH_NO_CLAUDE:-0}"
+      MH_BLAST_RADIUS_THRESHOLD: "${MH_BLAST_RADIUS_THRESHOLD:-50}"
     volumes:
-      - ./input:/input:ro
-      - ./output:/output:rw
-      - ./corpus:/corpus:ro
-      - ./.claude:/workspace/.claude:ro
-      - ./mcp-server:/workspace/mcp-server:ro
-    working_dir: /workspace
-    network_mode: none
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp:size=512m
+      - ./cases:/work/cases
+    user: "1000:1000"
+    command: ["doctor"]
+
+  # Same image, but with the host's ~/.claude/ mounted read-only so judges
+  # who already ran `claude /login` on the host don't need to re-auth or set
+  # ANTHROPIC_API_KEY. Activate with `docker compose --profile claude-mount up`.
+  memoryhound-claude-mount:
+    image: memoryhound:${MH_VERSION:-dev}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        MH_VERSION: ${MH_VERSION:-dev}
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      MH_NO_CLAUDE: "${MH_NO_CLAUDE:-0}"
+      MH_BLAST_RADIUS_THRESHOLD: "${MH_BLAST_RADIUS_THRESHOLD:-50}"
+    volumes:
+      - ./cases:/work/cases
+      - ${HOME}/.claude:/home/hound/.claude:ro
+    user: "1000:1000"
+    command: ["doctor"]
+    profiles: ["claude-mount"]
