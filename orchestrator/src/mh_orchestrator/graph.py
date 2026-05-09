@@ -152,10 +152,6 @@ def build_graph(recursion_limit: int | None = None) -> Any:
     limit = _resolve_recursion_limit(recursion_limit)
     g: StateGraph = StateGraph(IncidentState)
 
-    # Register all §11.2 nodes from the registry. Skip claude_dispatch — it
-    # was the Sub-Plan 02 skeleton placeholder and is no longer wired (T13
-    # deletes the file). Any future "framing-only" node would be filtered
-    # the same way.
     for name, fn in NODES.items():
         g.add_node(name, fn)
 
