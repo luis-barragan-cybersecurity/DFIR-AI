@@ -1,8 +1,6 @@
 """BlastRadius scoring + threshold-gate tests."""
 from __future__ import annotations
 
-import os
-
 from mh_orchestrator.blast_radius import BlastRadius
 
 

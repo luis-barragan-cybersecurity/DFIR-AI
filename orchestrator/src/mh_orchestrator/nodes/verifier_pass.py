@@ -63,6 +63,17 @@ def run(state: IncidentState) -> IncidentState:
             state, event="verifier_pass_no_findings",
             data={"subagent": SUBAGENT, "reason": "no findings to verify"},
         )
+        emit_message(
+            state, from_agent=SUBAGENT, to_agent="orchestrator",
+            role="response",
+            content="verifier_pass: no findings to verify",
+            metadata={
+                "verifier_decision": "noop",
+                "finding_id": None,
+                "verifier_iter": 0,
+                "rationale": "no findings produced this run",
+            },
+        )
     else:
         for idx, finding in enumerate(findings, start=1):
             fid = finding.get("finding_id", "")

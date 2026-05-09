@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .. import csf_tags, picerl
+from .. import csf_tags
 from ..persistence import append_history, write_checkpoint
 from ..state import IncidentState
 
