@@ -7,6 +7,7 @@ primitives are real on day one because they gate everything else.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -232,6 +233,58 @@ async def list_tools() -> list[Tool]:
                 "required": ["db_path"],
             },
         ),
+        Tool(
+            name="memory_volatility",
+            description=(
+                "Wrap Volatility 3 CLI to parse a memory dump. Plugin must be in "
+                "the allowlist (windows.* / linux.* / mac.* — see ALLOWED_PLUGINS). "
+                "Image path sandbox-asserted under /input. Returns parsed JSON list."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "image_path": {
+                        "type": "string",
+                        "description": "Path to memory image (under /input)",
+                    },
+                    "plugin": {
+                        "type": "string",
+                        "description": "Volatility 3 plugin name (e.g., windows.pslist)",
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Additional CLI args passed to vol",
+                        "default": [],
+                    },
+                    "timeout_sec": {
+                        "type": "integer",
+                        "default": 300,
+                        "minimum": 1,
+                        "maximum": 1800,
+                    },
+                },
+                "required": ["image_path", "plugin"],
+            },
+        ),
+        Tool(
+            name="linux_history_parse",
+            description=(
+                "Parse bash/zsh shell history file. Auto-detects format "
+                "(plain bash, bash with HISTTIMEFORMAT, or zsh extended). "
+                "Returns list of {line_num, ts, command, raw_excerpt} entries."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "history_path": {
+                        "type": "string",
+                        "description": "Path to .bash_history / .zsh_history (under /input)",
+                    },
+                },
+                "required": ["history_path"],
+            },
+        ),
     ]
 
 
@@ -301,6 +354,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             limit=arguments.get("limit", 100),
         )
         return [TextContent(type="text", text=str(result))]
+    if name == "memory_volatility":
+        from .tools.memory import memory_volatility
+
+        mem_result = memory_volatility(
+            arguments["image_path"],
+            arguments["plugin"],
+            args=arguments.get("args"),
+            timeout_sec=arguments.get("timeout_sec", 300),
+        )
+        return [TextContent(type="text", text=json.dumps(mem_result, default=str))]
+    if name == "linux_history_parse":
+        from .tools.linux import linux_history_parse
+
+        hist_result = linux_history_parse(arguments["history_path"])
+        return [TextContent(type="text", text=json.dumps(hist_result, default=str))]
     raise ValueError(f"Unknown tool: {name}")
 
 
