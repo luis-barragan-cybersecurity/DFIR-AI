@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import stat
-from pathlib import Path
 
 import pytest
 
@@ -15,8 +14,10 @@ def fake_claude(tmp_path, monkeypatch):
     fake.write_text(
         "#!/usr/bin/env bash\n"
         "echo '{\"type\":\"system\",\"subtype\":\"init\"}'\n"
-        "echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"WindowsAgent online.\"}]}}'\n"
-        "echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"WindowsAgent online.\"}'\n"
+        "echo '{\"type\":\"assistant\",\"message\":{\"content\":"
+        "[{\"type\":\"text\",\"text\":\"WindowsAgent online.\"}]}}'\n"
+        "echo '{\"type\":\"result\",\"subtype\":\"success\","
+        "\"result\":\"WindowsAgent online.\"}'\n"
     )
     fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
     monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")

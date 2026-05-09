@@ -38,6 +38,7 @@ def test_recursion_limit_fires(tmp_path, monkeypatch):
     monkeypatch.setenv("MH_NO_CLAUDE", "1")
     from langgraph.errors import GraphRecursionError
     from langgraph.graph import StateGraph
+
     from mh_orchestrator.state import IncidentState, new_state
 
     def loop_node(state):

@@ -44,6 +44,22 @@ ignore = ["S101", "S603", "S607"]
 strict = true
 python_version = "3.11"
 
+[[tool.mypy.overrides]]
+module = "langgraph.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "networkx.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "langgraph_checkpoint.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "protocol_sift_mcp.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short --cov=mh_orchestrator --cov-report=term-missing"
