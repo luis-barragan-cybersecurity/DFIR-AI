@@ -143,6 +143,12 @@ cmd_doctor() {
         warn "bin/mh-mcp-server not executable — run: chmod +x bin/mh-mcp-server"
     fi
 
+    if [[ -x "${MH_VENV}/bin/mh-orchestrate" ]]; then
+        ok "mh-orchestrate installed"
+    else
+        warn "mh-orchestrate missing — run: mh init"
+    fi
+
     echo ""
     if [[ $errors -eq 0 ]]; then
         ok "All critical checks passed."
@@ -187,6 +193,9 @@ cmd_init() {
     info "Installing protocol_sift_mcp (core + dev)"
     "$MH_PY" -m pip install --quiet --upgrade pip
     "$MH_PY" -m pip install --quiet -e "${MH_HOME}/mcp-server[dev]"
+
+    info "Installing orchestrator package (editable)…"
+    "$MH_PY" -m pip install --quiet -e "${MH_HOME}/orchestrator"
 
     if [[ $with_forensics -eq 1 ]]; then
         info "Installing forensics extras (heavy: volatility3, python-evtx, etc)"
@@ -263,6 +272,33 @@ cmd_run() {
     info "Launching Claude Code with triage-orchestrator skill"
     cd "$MH_HOME"
     claude_run "Use the triage-orchestrator skill to autonomously triage every artifact under ${input_dir}. Route to the correct OS specialist. Pin every finding. Acknowledge gaps explicitly. Stop when triage is complete. Write findings.json, narrative.md, and accuracy-report.md to ${output_dir}."
+}
+
+# ─── orchestrate (LangGraph state-machine driven) ──────────────────────────
+
+cmd_orchestrate() {
+    local case_id="${1:-}"
+    if [[ -z "$case_id" ]]; then
+        fail "Usage: mh orchestrate <case-id> [--recursion-limit N]"
+        return 2
+    fi
+    shift
+
+    if [[ ! -x "${MH_VENV}/bin/mh-orchestrate" ]]; then
+        fail "mh-orchestrate not installed. Run: mh init"
+        return 1
+    fi
+
+    local case_dir="${MH_CASES_DIR}/${case_id}"
+    local input_dir="${case_dir}/input"
+    if [[ ! -d "$input_dir" ]] || [[ -z "$(ls -A "$input_dir" 2>/dev/null)" ]]; then
+        fail "No evidence at ${input_dir}"
+        return 2
+    fi
+
+    info "Orchestrating case ${case_id} via LangGraph"
+    export MH_HOME EVIDENCE_PATH="$input_dir" CASE_ID="$case_id"
+    "${MH_VENV}/bin/mh-orchestrate" run "$case_id" --cases-dir "$MH_CASES_DIR" "$@"
 }
 
 # ─── serve (local web viewer) ────────────────────────────────────────────────
@@ -479,6 +515,7 @@ ${BOLD}COMMANDS${NC}
     demo [--autonomous]       Real-data showcase: self-collect + parse + audit log,
                               all on YOUR machine, no tokens.
     run <case-id>             Run Claude Code triage on cases/<id>/input/.
+    orchestrate <case-id>     LangGraph state-machine triage (Sub-Plan 02+)
     report <case-id>          Generate plain-English summary from findings
                               (deterministic, no LLM, no tokens).
     serve [--port=N]          Local web viewer for cases (markdown rendered,
@@ -516,6 +553,7 @@ main() {
         demo)         cmd_demo "$@" ;;
         self-collect) cmd_self_collect "$@" ;;
         run)          cmd_run "$@" ;;
+        orchestrate)  cmd_orchestrate "$@" ;;
         report)       cmd_report "$@" ;;
         serve)        cmd_serve "$@" ;;
         status)       cmd_status "$@" ;;
