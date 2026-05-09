@@ -33,6 +33,10 @@ def run(state: IncidentState) -> IncidentState:
         emit_message(state, from_agent="orchestrator", to_agent="WindowsAgent",
                      role="dispatch",
                      content="[skipped — MH_NO_CLAUDE=1]")
+        emit_message(state, from_agent="WindowsAgent", to_agent="orchestrator",
+                     role="response",
+                     content="[skipped — MH_NO_CLAUDE=1]",
+                     metadata={"skipped": True})
         record_audit(state, event="claude_dispatch_skipped", data={})
         state["_node_history"].append("claude_dispatch")
         write_checkpoint(state, out)
