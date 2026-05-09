@@ -56,27 +56,36 @@ Output lands in `cases/case-001/output/`:
 | `narrative.md` | Investigator-ready prose report |
 | `accuracy-report.md` | Honest FP / FN / hallucination tally |
 
-### Skeleton orchestrator (Sub-Plan 02)
+### LangGraph orchestrator (Sub-Plan 03)
 
-LangGraph state-machine entry point. Coexists with `mh run` (skill-driven path) during the Sub-Plan 02→03 transition.
+`mh orchestrate` walks the full §11.2 14-IR-node topology — detect, triage, analyze (with bounded RCA loop), attack_tag, kill_chain, d3fend_recommend, contain (with reversibility gate), eradicate, recover, lessons_learned, remediation, verifier_pass — with the five §11.3 conditional edges firing on severity, RCA cap, blast-radius, re-infection, and post-restore alarms. Coexists with `mh run` (skill-driven path).
 
 ```bash
 mh init                       # ensures both mcp-server and orchestrator installed
-mh orchestrate case-001       # runs LangGraph: session_init → claude_dispatch → session_finalize
+mh orchestrate case-001       # runs full §11.2 graph
 cat cases/case-001/output/state.json
-cat cases/case-001/output/agent_messages.jsonl
+cat cases/case-001/output/compliance_map.json
+cat cases/case-001/output/incident_summary.md
 ```
 
-Outputs land in `cases/<id>/output/`:
+Outputs land in `cases/<id>/output/` — ten §11.4 deliverables:
 
 | File | Purpose |
 |---|---|
 | `state.json` | Final IncidentState snapshot (Pydantic-serialized) |
 | `state.history.jsonl` | One snapshot per node exit |
-| `agent_messages.jsonl` | Inter-agent dispatch + response messages |
-| `audit.jsonl` | Plain append-only event log (existing) |
+| `audit.jsonl` | Plain append-only event log |
+| `agent_messages.jsonl` | Inter-agent dispatch + Verifier dissent trace |
+| `containment_actions.jsonl` | Advisory containment recs (NIST SP 800-61 §5.1) |
+| `recovery_verification.json` | Restore validation steps |
+| `lessons_learned.md` | Investigator retro |
+| `remediation_plan.json` | NIST SP 800-53 IR/SI/SC controls |
+| `compliance_map.json` | Multi-framework subcategory coverage (CSF 2.0 + ISO 27035 + ATT&CK + kill-chain) |
+| `incident_summary.md` | Investigator-readable narrative |
 
-Set `MH_NO_CLAUDE=1` to short-circuit the `claude_dispatch` node for CI / no-token testing.
+**Reversibility gate**: `contain` scores `hosts*5 + users*1 + services*3` per rec; over threshold (default 50; env override `MH_BLAST_RADIUS_THRESHOLD`) routes through `human_in_loop` which writes `human_approval_required.json`. All mitigations stay advisory.
+
+**Stub mode**: set `MH_NO_CLAUDE=1` to short-circuit LLM-invoking nodes for CI / no-token testing.
 
 ## See It Work In 60 Seconds (No API Key Needed)
 
@@ -149,18 +158,23 @@ mh check                     Quick env probe (exit 0/1).
 | Component | Status |
 |---|---|
 | Sandbox (path-escape rejection, deny-list hooks) | ✅ live |
-| `os_detect`, `magic_check` (cross-OS routing) | ✅ live (15 tests) |
-| Windows tools: `win_registry_get`, `win_prefetch_parse`, `win_evtx_query`, `win_lnk_parse` | ✅ live (16 tests) |
-| 11 Claude Code skills (full FOR500 / APFS / Linux content) | ✅ live |
+| `os_detect`, `magic_check` (cross-OS routing) | ✅ live |
+| Windows tools: `win_registry_get`, `win_prefetch_parse`, `win_evtx_query`, `win_lnk_parse` | ✅ live |
+| 13 Claude Code skills (FOR500 / APFS / Linux + IR planners) | ✅ live |
 | 5 specialist subagents | ✅ live |
 | 5 hooks (guard / audit / finalize / etc.) | ✅ live |
 | Pre-commit gate (ruff + pytest + license check) | ✅ live |
 | `mh` CLI + `mh-mcp-server` portable launcher | ✅ live |
-| `mac_*` macOS tools | 🛠️ W3 (May 10–16) |
-| `linux_*` Linux tools | 🛠️ W4 (May 17–23) |
-| `memory_volatility` wrapper | 🛠️ W2-W4 |
+| LangGraph orchestrator (full §11.2 14-IR-node topology) | ✅ live |
+| Multi-framework state (CSF 2.0 + ISO 27035 + PICERL + ATT&CK + kill-chain) | ✅ live |
+| Reversibility gate + human-in-loop + Verifier pass | ✅ live |
+| §11.4 deliverables (10 outputs incl. compliance_map + incident_summary) | ✅ live |
+| `mac_*` macOS tools | 🛠️ Sub-Plan 04 |
+| `linux_*` Linux tools | 🛠️ Sub-Plan 04 |
+| `memory_volatility` wrapper | 🛠️ Sub-Plan 04 |
+| D3FEND knowledge graph integration (currently stub returning `[]`) | 🛠️ Sub-Plan 04 |
 
-48 unit tests passing. CI green on every commit.
+185 tests passing (58 mcp-server + 127 orchestrator). CI green on every commit.
 
 ## Required Hackathon Deliverables (8 of 8)
 
