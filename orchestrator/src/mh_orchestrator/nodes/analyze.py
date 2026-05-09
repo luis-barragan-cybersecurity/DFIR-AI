@@ -10,12 +10,11 @@ Marks RS.AN-01 (Analysis: notifications + cause). Sets phase='analyze'.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 from .. import csf_tags, picerl
-from ..claude_node import invoke_subagent
+from ..claude_node import invoke_subagent, should_stub
 from ..persistence import append_history, write_checkpoint
 from ..state import IncidentState
 
@@ -86,7 +85,7 @@ def run(state: IncidentState) -> IncidentState:
             metadata={"iter": iter_num, "phase": "analyze"},
         )
 
-        if os.environ.get("MH_NO_CLAUDE") == "1":
+        if should_stub(NODE_NAME):
             # Deterministic stub: no new findings → RCA complete after one pass.
             emit_message(
                 state, from_agent=subagent, to_agent="orchestrator",

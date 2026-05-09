@@ -7,10 +7,34 @@ from inside a LangGraph node.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+def should_stub(node_name: str) -> bool:
+    """Decide whether an LLM-invoking node should use its stub branch.
+
+    Rules (in precedence order):
+    1. If MH_NO_CLAUDE is not set or != "1" → return False (always real).
+    2. If MH_REAL_CLAUDE_NODES is set and node_name is in the
+       comma-separated list → return False (override: real Claude even
+       though MH_NO_CLAUDE=1).
+    3. Otherwise → return True (stub).
+
+    Args:
+        node_name: One of "triage", "analyze", "verifier_pass".
+
+    Returns:
+        True if the node should take its stub branch.
+    """
+    if os.environ.get("MH_NO_CLAUDE") != "1":
+        return False
+    real_nodes = os.environ.get("MH_REAL_CLAUDE_NODES", "")
+    requested = {n.strip() for n in real_nodes.split(",") if n.strip()}
+    return node_name not in requested
 
 
 @dataclass

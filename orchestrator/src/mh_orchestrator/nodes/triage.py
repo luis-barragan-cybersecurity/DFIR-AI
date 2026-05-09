@@ -1,13 +1,14 @@
 """triage node — invokes per-OS specialist subagent for severity classification."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from .. import csf_tags, picerl
-from ..claude_node import invoke_subagent
+from ..claude_node import invoke_subagent, should_stub
 from ..persistence import append_history, write_checkpoint
 from ..state import IncidentState
+
+NODE_NAME = "triage"
 
 # Map _detected_os → subagent name (per .claude/agents/*.md frontmatter)
 OS_TO_SUBAGENT = {
@@ -35,7 +36,7 @@ def run(state: IncidentState) -> IncidentState:
     emit_message(state, from_agent="orchestrator", to_agent=subagent,
                  role="dispatch", content="triage: classify severity and confirm OS")
 
-    if os.environ.get("MH_NO_CLAUDE") == "1":
+    if should_stub(NODE_NAME):
         # Deterministic stub for CI: medium severity
         state["severity"] = "medium"
         emit_message(state, from_agent=subagent, to_agent="orchestrator",

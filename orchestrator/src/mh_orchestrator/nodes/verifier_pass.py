@@ -16,12 +16,11 @@ Advisory-only — no system changes.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from .. import csf_tags, picerl
-from ..claude_node import invoke_subagent
+from ..claude_node import invoke_subagent, should_stub
 from ..persistence import append_history, write_checkpoint
 from ..state import IncidentState
 
@@ -91,7 +90,7 @@ def run(state: IncidentState) -> IncidentState:
                 metadata={"finding_id": fid, "verifier_iter": idx},
             )
 
-            if os.environ.get("MH_NO_CLAUDE") == "1":
+            if should_stub(NODE_NAME):
                 decision = _stub_decision(finding, idx)
                 record_audit(
                     state, event="verifier_pass_stub",
