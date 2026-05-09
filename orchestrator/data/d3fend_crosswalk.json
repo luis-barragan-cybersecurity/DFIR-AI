@@ -1,0 +1,496 @@
+{
+  "version": "1.3.0",
+  "source": "https://d3fend.mitre.org",
+  "last_updated": "2026-05-08",
+  "mappings": {
+    "T1003.001": {
+      "attack_name": "OS Credential Dumping: LSASS Memory",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-PA",
+          "name": "Process Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect LSASS memory access patterns by enumerating processes that read/write LSASS handles.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-LFP",
+          "name": "Local File Permissions",
+          "tactic": "Isolate",
+          "rationale": "Restrict LSASS memory read access via Protected Process Light and LSA Protection (RunAsPPL).",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1059.001": {
+      "attack_name": "Command and Scripting Interpreter: PowerShell",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-SBL",
+          "name": "Script Block Logging",
+          "tactic": "Detect",
+          "rationale": "Capture deobfuscated PowerShell script blocks via EventID 4104 to surface malicious payloads even when wrapped in encoded commands.",
+          "source": "curated"
+        },
+        {
+          "d3fend_id": "D3-CLM",
+          "name": "Constrained Language Mode",
+          "tactic": "Harden",
+          "rationale": "Limit PowerShell to a safe subset of language features so adversary tradecraft (Add-Type, reflection, COM) fails to execute on hardened endpoints.",
+          "source": "curated"
+        },
+        {
+          "d3fend_id": "D3-PA",
+          "name": "Process Analysis",
+          "tactic": "Detect",
+          "rationale": "Inspect powershell.exe / pwsh.exe parent-child relationships and module loads to detect anomalous interpreter use.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1059.003": {
+      "attack_name": "Command and Scripting Interpreter: Windows Command Shell",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-PSA",
+          "name": "Process Spawn Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect cmd.exe spawned by Office, browser, or service processes — a strong signal of living-off-the-land execution.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-EAL",
+          "name": "Executable Allowlisting",
+          "tactic": "Isolate",
+          "rationale": "Restrict cmd.exe execution to authorized administrative contexts via WDAC/AppLocker policies.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1027": {
+      "attack_name": "Obfuscated Files or Information",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-EAL",
+          "name": "Executable Allowlisting",
+          "tactic": "Isolate",
+          "rationale": "Block execution of unsigned or unknown binaries so packed/obfuscated payloads cannot run on protected hosts.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-SA",
+          "name": "Static Analysis",
+          "tactic": "Detect",
+          "rationale": "Use entropy, packer signatures, and string analysis on suspicious binaries to surface obfuscation prior to execution.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1053.005": {
+      "attack_name": "Scheduled Task/Job: Scheduled Task",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-SJA",
+          "name": "Scheduled Job Analysis",
+          "tactic": "Detect",
+          "rationale": "Enumerate Task Scheduler XML in C:\\Windows\\System32\\Tasks and registry TaskCache to surface adversary-created tasks.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-PSA",
+          "name": "Process Spawn Analysis",
+          "tactic": "Detect",
+          "rationale": "Watch for processes spawned by svchost.exe hosting Schedule service to correlate task launches with payload execution.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1055": {
+      "attack_name": "Process Injection",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-PSEP",
+          "name": "Process Segment Execution Prevention",
+          "tactic": "Harden",
+          "rationale": "DEP/NX prevents execution from data segments, blocking shellcode injection into RW memory regions.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-MBT",
+          "name": "Memory Boundary Tracking",
+          "tactic": "Detect",
+          "rationale": "Track RWX allocations and remote memory writes (VirtualAllocEx + WriteProcessMemory) to flag classic injection patterns.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-PCSV",
+          "name": "Process Code Segment Verification",
+          "tactic": "Detect",
+          "rationale": "Compare in-memory code pages against on-disk image to detect hollowed or patched processes.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1078": {
+      "attack_name": "Valid Accounts",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-AET",
+          "name": "Authentication Event Thresholding",
+          "tactic": "Detect",
+          "rationale": "Flag impossible-travel, off-hours, and high-volume logon events tied to legitimate accounts.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-MFA",
+          "name": "Multi-factor Authentication",
+          "tactic": "Harden",
+          "rationale": "Require a second factor so stolen credentials alone are insufficient for account access.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1218": {
+      "attack_name": "System Binary Proxy Execution",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-EAL",
+          "name": "Executable Allowlisting",
+          "tactic": "Isolate",
+          "rationale": "WDAC/AppLocker rules that block known LOLBins (rundll32, regsvr32, mshta) when invoked outside expected contexts.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-PSA",
+          "name": "Process Spawn Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect signed system binaries proxying execution via unusual command lines or parent processes.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1486": {
+      "attack_name": "Data Encrypted for Impact",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-FAPA",
+          "name": "File Access Pattern Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect mass-rename, mass-rewrite, and high-entropy write bursts characteristic of ransomware encryption.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-RF",
+          "name": "Restore File",
+          "tactic": "Restore",
+          "rationale": "Recover encrypted data from immutable, offline, or versioned backups to neutralize ransom leverage.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-LFP",
+          "name": "Local File Permissions",
+          "tactic": "Isolate",
+          "rationale": "Restrict write access to critical data shares so a single compromised account cannot encrypt enterprise files.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1547.001": {
+      "attack_name": "Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-SICA",
+          "name": "System Init Config Analysis",
+          "tactic": "Detect",
+          "rationale": "Audit Run/RunOnce keys and Startup folders for unauthorized persistence entries.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-PSA",
+          "name": "Process Spawn Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect anomalous binaries spawned by explorer.exe at logon — a hallmark of Run-key persistence.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-EAL",
+          "name": "Executable Allowlisting",
+          "tactic": "Isolate",
+          "rationale": "Block unsigned binaries from auto-executing at logon even when the registry pointer is hijacked.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1543.003": {
+      "attack_name": "Create or Modify System Process: Windows Service",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-SBV",
+          "name": "Service Binary Verification",
+          "tactic": "Detect",
+          "rationale": "Verify service ImagePath binaries against known-good hashes / signatures to detect replaced or planted service executables.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-PSA",
+          "name": "Process Spawn Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect new services spawned by services.exe with abnormal command lines or unsigned binaries.",
+          "source": "curated"
+        },
+        {
+          "d3fend_id": "D3-RMA",
+          "name": "Registry Modification Analysis",
+          "tactic": "Detect",
+          "rationale": "Audit changes to HKLM\\SYSTEM\\CurrentControlSet\\Services to surface adversary service creation or hijack.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1110": {
+      "attack_name": "Brute Force",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-AET",
+          "name": "Authentication Event Thresholding",
+          "tactic": "Detect",
+          "rationale": "Lock or alert on accounts exceeding failed-logon thresholds within short windows.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-MFA",
+          "name": "Multi-factor Authentication",
+          "tactic": "Harden",
+          "rationale": "MFA defeats password-only brute force by requiring possession-based confirmation.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1083": {
+      "attack_name": "File and Directory Discovery",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-FAPA",
+          "name": "File Access Pattern Analysis",
+          "tactic": "Detect",
+          "rationale": "Flag processes that recursively enumerate user/document directories — a precursor to staging or exfil.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-PSA",
+          "name": "Process Spawn Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect chained execution of dir, tree, forfiles, and Get-ChildItem from non-interactive processes.",
+          "source": "curated"
+        }
+      ]
+    },
+    "T1071.001": {
+      "attack_name": "Application Layer Protocol: Web Protocols",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-NTA",
+          "name": "Network Traffic Analysis",
+          "tactic": "Detect",
+          "rationale": "Inspect HTTP/HTTPS metadata for beacon timing, JA3 anomalies, and payload size patterns indicative of C2.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-DNSAL",
+          "name": "DNS Allowlisting",
+          "tactic": "Isolate",
+          "rationale": "Restrict DNS resolution to approved domains so newly registered or DGA-generated C2 hosts fail to resolve.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1105": {
+      "attack_name": "Ingress Tool Transfer",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-NTF",
+          "name": "Network Traffic Filtering",
+          "tactic": "Isolate",
+          "rationale": "Egress filtering blocks outbound retrievals to attacker-controlled hosts and unsanctioned ports.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-FHR",
+          "name": "File Hash Reputation Analysis",
+          "tactic": "Detect",
+          "rationale": "Hash newly-arrived binaries against reputation feeds to flag known-bad payloads on ingress.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1005": {
+      "attack_name": "Data from Local System",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-FAPA",
+          "name": "File Access Pattern Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect bulk reads of user document trees or sensitive directories prior to staging/exfil.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-LFP",
+          "name": "Local File Permissions",
+          "tactic": "Isolate",
+          "rationale": "Least-privilege ACLs on sensitive data limit which compromised users/processes can collect it.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1039": {
+      "attack_name": "Data from Network Shared Drive",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-SAPA",
+          "name": "Share Access Pattern Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect anomalous SMB enumeration or bulk reads from file shares by single hosts/accounts.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-NI",
+          "name": "Network Isolation",
+          "tactic": "Isolate",
+          "rationale": "Segment file-share access by role/department so a compromised host cannot enumerate enterprise-wide shares.",
+          "source": "curated"
+        }
+      ]
+    },
+    "T1041": {
+      "attack_name": "Exfiltration Over C2 Channel",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-NTF",
+          "name": "Network Traffic Filtering",
+          "tactic": "Isolate",
+          "rationale": "Egress filtering and DLP on the C2 channel cap exfil volume even when the channel itself is permitted.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-NTA",
+          "name": "Network Traffic Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect long-lived, high-volume outbound flows mismatched to the protocol's expected profile.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1046": {
+      "attack_name": "Network Service Discovery",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-NI",
+          "name": "Network Isolation",
+          "tactic": "Isolate",
+          "rationale": "Microsegmentation prevents a compromised host from sweeping unrelated subnets.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-CAA",
+          "name": "Connection Attempt Analysis",
+          "tactic": "Detect",
+          "rationale": "Flag hosts initiating connections to many internal ports/IPs in a short window — classic scan signature.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1018": {
+      "attack_name": "Remote System Discovery",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-CAA",
+          "name": "Connection Attempt Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect ICMP/SMB/AD enumeration sweeps used to map reachable hosts post-compromise.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-NI",
+          "name": "Network Isolation",
+          "tactic": "Isolate",
+          "rationale": "Microsegmentation prevents successful enumeration responses across trust boundaries.",
+          "source": "d3fend.mitre.org"
+        }
+      ]
+    },
+    "T1082": {
+      "attack_name": "System Information Discovery",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-PSA",
+          "name": "Process Spawn Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect rapid sequential invocation of systeminfo, wmic, hostname, ver — a low-priority but suggestive recon pattern.",
+          "source": "curated"
+        }
+      ]
+    },
+    "T1033": {
+      "attack_name": "System Owner/User Discovery",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-PSA",
+          "name": "Process Spawn Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect whoami, query user, and quser executions chained with other discovery commands.",
+          "source": "curated"
+        }
+      ]
+    },
+    "T1056.001": {
+      "attack_name": "Input Capture: Keylogging",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-PCSV",
+          "name": "Process Code Segment Verification",
+          "tactic": "Detect",
+          "rationale": "Detect injected hooks (SetWindowsHookEx, GetAsyncKeyState polling) by comparing in-memory code to disk image.",
+          "source": "d3fend.mitre.org"
+        },
+        {
+          "d3fend_id": "D3-PA",
+          "name": "Process Analysis",
+          "tactic": "Detect",
+          "rationale": "Inspect processes loading raw input or hook-related modules outside expected accessibility/input-method contexts.",
+          "source": "curated"
+        }
+      ]
+    },
+    "T1113": {
+      "attack_name": "Screen Capture",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-PSA",
+          "name": "Process Spawn Analysis",
+          "tactic": "Detect",
+          "rationale": "Detect non-interactive processes invoking GDI/screen-capture APIs (BitBlt, PrintWindow) outside expected tooling.",
+          "source": "curated"
+        },
+        {
+          "d3fend_id": "D3-PA",
+          "name": "Process Analysis",
+          "tactic": "Detect",
+          "rationale": "Identify processes loading user32/gdi32 graphics-capture functions in headless or service contexts.",
+          "source": "curated"
+        }
+      ]
+    },
+    "T1115": {
+      "attack_name": "Clipboard Data",
+      "countermeasures": [
+        {
+          "d3fend_id": "D3-PCSV",
+          "name": "Process Code Segment Verification",
+          "tactic": "Detect",
+          "rationale": "Detect processes hooking OpenClipboard/GetClipboardData via injected code or unexpected module patches.",
+          "source": "curated"
+        }
+      ]
+    }
+  }
+}
