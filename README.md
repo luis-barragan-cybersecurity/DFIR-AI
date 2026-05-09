@@ -29,6 +29,36 @@ MemoryHound is a layer on top of Claude Code. Whatever auth Claude Code uses, Me
 
 ## Quickstart
 
+Three deployment paths — pick one. Full details in [`docs/deployment.md`](docs/deployment.md).
+
+### Path 1: Pre-built Docker (no build, fastest)
+
+```bash
+docker pull ghcr.io/saivarun3407/memoryhound:sub-plan-05-complete
+docker run --rm \
+    -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+    -v "$PWD/cases:/work/cases" \
+    ghcr.io/saivarun3407/memoryhound:sub-plan-05-complete \
+    orchestrate <case-id>
+```
+
+### Path 2: Local Docker build
+
+```bash
+git clone https://github.com/saivarun3407/DFIR-AI.git memoryhound && cd memoryhound
+docker compose build && docker compose run --rm memoryhound orchestrate <case-id>
+```
+
+### Path 3: Host install (SIFT or Ubuntu 22.04)
+
+```bash
+git clone https://github.com/saivarun3407/DFIR-AI.git memoryhound && cd memoryhound
+bash scripts/install-sift.sh --install --with-forensics --with-symbols
+./bin/mh demo
+```
+
+### Local Development (existing skill-driven path)
+
 ```bash
 # 1. Clone + install (one time)
 git clone https://github.com/saivarun3407/DFIR-AI.git memoryhound
@@ -203,6 +233,7 @@ mh check                     Quick env probe (exit 0/1).
 
 ## Documentation
 
+- [`docs/deployment.md`](docs/deployment.md) — three deployment paths (Docker pull, Docker build, host install)
 - [`docs/architecture.md`](docs/architecture.md) — full system design
 - [`docs/usage.md`](docs/usage.md) — detailed usage walkthrough
 - [`docs/development.md`](docs/development.md) — pre-commit + CI workflow

@@ -46,3 +46,27 @@ If `ruff --fix` modifies files, the commit aborts so you can re-stage:
 git add -A
 git commit -m "..."   # retry — now applies clean
 ```
+
+## Shellcheck pre-commit
+
+The repo lints all bash scripts (`scripts/*.sh`, `bin/mh`, `bin/mh-mcp-server`) with shellcheck via pre-commit. Install once:
+
+```bash
+pre-commit install
+```
+
+To run on demand:
+
+```bash
+pre-commit run shellcheck --all-files
+```
+
+## Install harness
+
+Sub-Plan 05 ships a bash test harness for `install-sift.sh`:
+
+```bash
+bash scripts/test-install-sift.sh
+```
+
+Asserts syntax, --help, --check, --install (NYI marker absent), unknown-flag handling, and idempotency. Pure bash — no pytest dep. Should pass on any host that can run `bash`.
