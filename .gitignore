@@ -49,6 +49,9 @@ corpus/**/*.img
 corpus/**/*.E01
 corpus/**/*.aff
 corpus/**/*.lime
+corpus/**/input/*.raw
+corpus/**/input/*.dmp
+corpus/**/input/*.mem
 !cases/_demo/
 
 # Local venv
