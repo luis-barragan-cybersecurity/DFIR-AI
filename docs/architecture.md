@@ -103,7 +103,7 @@ Each node mutates state along five orthogonal frameworks tracked simultaneously:
 - **SANS PICERL** — `picerl_phase_for(node)` maps nodes to Preparation / Identification / Containment / Eradication / Recovery / Lessons-Learned
 - **ISO/IEC 27035-1:2023** — `iso27035_phase` advances through plan_and_prepare → detection_and_reporting → assessment_and_decision → responses → learn_lessons
 - **MITRE ATT&CK v18** — `attack_tag` extracts technique IDs (`T1059`, `T1059.001`) into `attack_techniques`; `kill_chain` maps to Lockheed Martin 7-stage `kill_chain_stage`
-- **MITRE D3FEND v1.3.0** — `d3fend_recommend` populates `d3fend_recommendations` (stub returning `[]` in SP03; full crosswalk in Sub-Plan 04)
+- **MITRE D3FEND v1.3.0** — `d3fend_recommend` populates `d3fend_recommendations` from a static crosswalk (Sub-Plan 04 live; see "D3FEND Crosswalk" below)
 
 ### Reversibility Gate
 
@@ -120,6 +120,30 @@ Default 50 (env override `MH_LG_RECURSION_LIMIT`). Bounds the analyze RCA loop, 
 ### Stub Mode
 
 `MH_NO_CLAUDE=1` short-circuits LLM-invoking nodes (`triage`, `analyze`, `verifier_pass`) with deterministic stubs. Used for CI / no-token smoke tests.
+
+### D3FEND Crosswalk (Sub-Plan 04)
+
+The `d3fend_recommend` node populates `state["d3fend_recommendations"]` from a static JSON crosswalk at `orchestrator/data/d3fend_crosswalk.json`. The crosswalk maps ~25 ATT&CK technique IDs to 52 D3FEND v1.3.0 countermeasures, sourced from the public mappings page at https://d3fend.mitre.org/. Each entry records `d3fend_id`, `name`, `tactic` (one of Model/Harden/Detect/Isolate/Deceive/Evict/Restore), `attack_id_satisfied`, `rationale`, and `source` (`d3fend.mitre.org` for explicit mappings, `curated` for analogical extensions). Unknown ATT&CK IDs emit a `d3fend_crosswalk_miss` audit event so coverage gaps are auditable.
+
+### Per-Node Real-Claude Opt-In (Sub-Plan 04)
+
+`MH_NO_CLAUDE=1` is the CI default — every LLM-invoking node (`triage`, `analyze`, `verifier_pass`) takes its stub branch. Per-node real-Claude opt-in via `MH_REAL_CLAUDE_NODES=<comma-list>` overrides the stub for the listed nodes only:
+
+```bash
+MH_NO_CLAUDE=1 MH_REAL_CLAUDE_NODES=triage ./bin/mh orchestrate <case-id>
+# triage hits real Claude; analyze + verifier_pass stay stubbed (token-bounded)
+```
+
+The `should_stub(node_name)` helper in `claude_node.py` centralizes this decision. `bin/mh demo --real-claude` is a wrapper that exports the env vars and self-collects toy evidence for an opt-in smoke (~$0.01/run).
+
+### New MCP Tools (Sub-Plan 04)
+
+| Tool | Purpose | Sandbox |
+|---|---|---|
+| `memory_volatility(image_path, plugin)` | Wrap Volatility 3 CLI; allowlisted plugin set | image under /input |
+| `linux_history_parse(history_path)` | bash/zsh history regex parser | path under /input |
+
+`memory_volatility` plugin allowlist (11 plugins): `windows.{pslist,psscan,malfind,netscan}`, `linux.{pslist,bash,malfind,sockstat}`, `mac.{pslist,malfind,netstat}`. Extending the allowlist is a one-line `frozenset` edit.
 
 ### Entry points
 

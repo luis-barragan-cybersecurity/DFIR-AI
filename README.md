@@ -106,6 +106,16 @@ Output:
 
 This is the 15 seconds of footage that wins the hackathon's Audit Trail Quality criterion.
 
+### Real-Claude Smoke (opt-in)
+
+Set `ANTHROPIC_API_KEY` or run `claude /login`, then:
+
+```bash
+./bin/mh demo --real-claude    # ~$0.01, ≤1500 tokens, triage subagent only
+```
+
+Uses one short triage subagent call against self-collected evidence to prove the live pipeline works. `MH_DEMO_NONINTERACTIVE=1` skips the y/N prompt.
+
 ## Architecture
 
 ```
@@ -137,8 +147,8 @@ MemoryHound enforces a hard contract: every finding requires a structured eviden
 
 - **Windows** (10 / 11) — registry, EVTX, Prefetch, LNK, ShellBags, Recycle Bin, browser, USB, cloud connectors
 - **macOS** — APFS, plist, Unified Logs (`tracev3`), KnowledgeC, Spotlight *(W3 in progress)*
-- **Linux** — systemd journal, audit log, shell history, persistence vectors *(W4 in progress)*
-- **Memory** (cross-OS) — Volatility 3 windows.* / mac.* / linux.* plugin families *(W2-W4)*
+- **Linux** — shell history (bash + zsh) *(SP04 live)*; systemd journal, audit log, persistence vectors *(SP05+)*
+- **Memory** (cross-OS) — Volatility 3 windows.* / mac.* / linux.* plugin families *(SP04 live, 11-plugin allowlist)*
 
 ## CLI Reference
 
@@ -169,12 +179,14 @@ mh check                     Quick env probe (exit 0/1).
 | Multi-framework state (CSF 2.0 + ISO 27035 + PICERL + ATT&CK + kill-chain) | ✅ live |
 | Reversibility gate + human-in-loop + Verifier pass | ✅ live |
 | §11.4 deliverables (10 outputs incl. compliance_map + incident_summary) | ✅ live |
-| `mac_*` macOS tools | 🛠️ Sub-Plan 04 |
-| `linux_*` Linux tools | 🛠️ Sub-Plan 04 |
-| `memory_volatility` wrapper | 🛠️ Sub-Plan 04 |
-| D3FEND knowledge graph integration (currently stub returning `[]`) | 🛠️ Sub-Plan 04 |
+| `memory_volatility` (Volatility 3 CLI) | ✅ live (7 tests) |
+| `linux_history_parse` (bash/zsh formats) | ✅ live (4 tests) |
+| D3FEND ATT&CK → countermeasure crosswalk | ✅ live (25 techniques, 52 countermeasures) |
+| `mh demo --real-claude` opt-in real-Claude smoke | ✅ live (gated test in CI) |
+| `mac_*` macOS tools (apfs/tracev3/spotlight) | 🛠️ Sub-Plan 05+ |
+| `linux_journal_query`, `linux_audit_query`, `linux_systemd_units` | 🛠️ Sub-Plan 05+ |
 
-185 tests passing (58 mcp-server + 127 orchestrator). CI green on every commit.
+210 tests passing (73 mcp-server + 136 orchestrator + 1 opt-in skip). CI green on every commit.
 
 ## Required Hackathon Deliverables (8 of 8)
 

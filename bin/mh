@@ -396,16 +396,18 @@ cmd_tools() {
     win_evtx_query             — filter EVTX by EID + time range
     win_lnk_parse              — parse .lnk for target + drive_serial
 
-  macOS triage (W3 stub):
-    mac_apfs_inspect, mac_plist_get, mac_tracev3_query,
-    mac_knowledgec_query, mac_spotlight_query
+  macOS triage:
+    mac_plist_get              — live
+    mac_apfs_inspect, mac_tracev3_query,
+    mac_knowledgec_query, mac_spotlight_query   (Sub-Plan 05+ deferred)
 
-  Linux triage (W4 stub):
-    linux_journal_query, linux_audit_query, linux_history_parse,
-    linux_systemd_units, linux_cron_parse
+  Linux triage:
+    linux_history_parse        — live (bash + zsh formats)
+    linux_journal_query, linux_audit_query,
+    linux_systemd_units, linux_cron_parse        (Sub-Plan 05+ deferred)
 
-  Memory (W2-W4 stub):
-    memory_volatility          — Volatility 3 plugin invocation
+  Memory (cross-OS):
+    memory_volatility          — Volatility 3 plugin invocation (live, 11-plugin allowlist)
 EOF
 }
 
