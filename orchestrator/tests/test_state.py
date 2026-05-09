@@ -70,6 +70,11 @@ def test_new_state_has_internal_control_flags() -> None:
     assert s["_post_restore_alarms"] is False
     assert s["_verifier_complete"] is False
     assert s["_findings"] == []
+    assert s["_max_blast_score"] == 0
+    assert s["containment_actions"] == []
+    assert s["eradication_actions"] == []
+    assert s["recovery_actions"] == []
+    assert s["remediation_plan"] == []
 
 
 def test_state_roundtrip_preserves_internal_flags() -> None:
@@ -81,6 +86,11 @@ def test_state_roundtrip_preserves_internal_flags() -> None:
     s["_post_restore_alarms"] = True
     s["_verifier_complete"] = True
     s["_findings"].append({"finding_id": "F-001", "claim": "test"})
+    s["_max_blast_score"] = 42
+    s["containment_actions"].append({"id": "CONTAIN-1", "advisory_only": True})
+    s["eradication_actions"].append({"id": "ERADICATE-1", "advisory_only": True})
+    s["recovery_actions"].append({"id": "RECOVER-1", "advisory_only": True})
+    s["remediation_plan"].append({"control_id": "IR-4", "advisory_only": True})
 
     blob = serialize_state(s)
     import json
@@ -94,3 +104,8 @@ def test_state_roundtrip_preserves_internal_flags() -> None:
     assert s2["_post_restore_alarms"] is True
     assert s2["_verifier_complete"] is True
     assert s2["_findings"] == [{"finding_id": "F-001", "claim": "test"}]
+    assert s2["_max_blast_score"] == 42
+    assert s2["containment_actions"] == [{"id": "CONTAIN-1", "advisory_only": True}]
+    assert s2["eradication_actions"] == [{"id": "ERADICATE-1", "advisory_only": True}]
+    assert s2["recovery_actions"] == [{"id": "RECOVER-1", "advisory_only": True}]
+    assert s2["remediation_plan"] == [{"control_id": "IR-4", "advisory_only": True}]

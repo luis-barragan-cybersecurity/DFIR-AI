@@ -71,7 +71,10 @@ class IncidentState(TypedDict, total=False):
     csf_subcategories_satisfied: set[str]
     iso27035_phase: str
     d3fend_recommendations: list[Countermeasure]
-    remediation_plan: list[Control]
+    remediation_plan: list[dict[str, Any]]
+    containment_actions: list[dict[str, Any]]
+    eradication_actions: list[dict[str, Any]]
+    recovery_actions: list[dict[str, Any]]
     evidence_chain: list[HashChainEntry]
     # Internal — not in §11.1 but needed for plumbing
     _node_history: list[str]
@@ -83,6 +86,7 @@ class IncidentState(TypedDict, total=False):
     _post_restore_alarms: bool
     _verifier_complete: bool
     _findings: list[dict[str, Any]]
+    _max_blast_score: int
 
 
 def new_state(incident_id: str) -> IncidentState:
@@ -99,6 +103,9 @@ def new_state(incident_id: str) -> IncidentState:
         "iso27035_phase": "detection_and_reporting",
         "d3fend_recommendations": [],
         "remediation_plan": [],
+        "containment_actions": [],
+        "eradication_actions": [],
+        "recovery_actions": [],
         "evidence_chain": [],
         "_node_history": [],
         "_output_dir": "",
@@ -109,6 +116,7 @@ def new_state(incident_id: str) -> IncidentState:
         "_post_restore_alarms": False,
         "_verifier_complete": False,
         "_findings": [],
+        "_max_blast_score": 0,
     })
 
 
@@ -125,7 +133,10 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "csf_subcategories_satisfied": sorted(s["csf_subcategories_satisfied"]),
         "iso27035_phase": s["iso27035_phase"],
         "d3fend_recommendations": [asdict(c) for c in s["d3fend_recommendations"]],
-        "remediation_plan": [asdict(c) for c in s["remediation_plan"]],
+        "remediation_plan": list(s.get("remediation_plan", [])),
+        "containment_actions": list(s.get("containment_actions", [])),
+        "eradication_actions": list(s.get("eradication_actions", [])),
+        "recovery_actions": list(s.get("recovery_actions", [])),
         "evidence_chain": [asdict(h) for h in s["evidence_chain"]],
         "_node_history": list(s.get("_node_history", [])),
         "_output_dir": s.get("_output_dir", ""),
@@ -136,6 +147,7 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "_post_restore_alarms": s.get("_post_restore_alarms", False),
         "_verifier_complete": s.get("_verifier_complete", False),
         "_findings": list(s.get("_findings", [])),
+        "_max_blast_score": s.get("_max_blast_score", 0),
     }
 
 
@@ -151,7 +163,10 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["csf_subcategories_satisfied"] = set(d["csf_subcategories_satisfied"])
     s["iso27035_phase"] = d["iso27035_phase"]
     s["d3fend_recommendations"] = [Countermeasure(**c) for c in d["d3fend_recommendations"]]
-    s["remediation_plan"] = [Control(**c) for c in d["remediation_plan"]]
+    s["remediation_plan"] = list(d.get("remediation_plan", []))
+    s["containment_actions"] = list(d.get("containment_actions", []))
+    s["eradication_actions"] = list(d.get("eradication_actions", []))
+    s["recovery_actions"] = list(d.get("recovery_actions", []))
     s["evidence_chain"] = [HashChainEntry(**h) for h in d["evidence_chain"]]
     s["_node_history"] = list(d.get("_node_history", []))
     s["_output_dir"] = d.get("_output_dir", "")
@@ -162,4 +177,5 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["_post_restore_alarms"] = d.get("_post_restore_alarms", False)
     s["_verifier_complete"] = d.get("_verifier_complete", False)
     s["_findings"] = list(d.get("_findings", []))
+    s["_max_blast_score"] = d.get("_max_blast_score", 0)
     return s
