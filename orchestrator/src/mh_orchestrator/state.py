@@ -85,8 +85,10 @@ class IncidentState(TypedDict, total=False):
     _reinfection_detected: bool
     _post_restore_alarms: bool
     _verifier_complete: bool
+    _verifier_decisions: list[dict[str, Any]]
     _findings: list[dict[str, Any]]
     _max_blast_score: int
+    human_approval_required: bool
 
 
 def new_state(incident_id: str) -> IncidentState:
@@ -115,8 +117,10 @@ def new_state(incident_id: str) -> IncidentState:
         "_reinfection_detected": False,
         "_post_restore_alarms": False,
         "_verifier_complete": False,
+        "_verifier_decisions": [],
         "_findings": [],
         "_max_blast_score": 0,
+        "human_approval_required": False,
     })
 
 
@@ -146,8 +150,10 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "_reinfection_detected": s.get("_reinfection_detected", False),
         "_post_restore_alarms": s.get("_post_restore_alarms", False),
         "_verifier_complete": s.get("_verifier_complete", False),
+        "_verifier_decisions": list(s.get("_verifier_decisions", [])),
         "_findings": list(s.get("_findings", [])),
         "_max_blast_score": s.get("_max_blast_score", 0),
+        "human_approval_required": s.get("human_approval_required", False),
     }
 
 
@@ -176,6 +182,8 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["_reinfection_detected"] = d.get("_reinfection_detected", False)
     s["_post_restore_alarms"] = d.get("_post_restore_alarms", False)
     s["_verifier_complete"] = d.get("_verifier_complete", False)
+    s["_verifier_decisions"] = list(d.get("_verifier_decisions", []))
     s["_findings"] = list(d.get("_findings", []))
     s["_max_blast_score"] = d.get("_max_blast_score", 0)
+    s["human_approval_required"] = d.get("human_approval_required", False)
     return s
