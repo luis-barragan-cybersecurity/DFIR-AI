@@ -432,12 +432,38 @@ cmd_self_collect() {
 
 cmd_demo() {
     local autonomous=0
-    for arg in "$@"; do
-        case "$arg" in
-            --autonomous|--auto) autonomous=1 ;;
-            -h|--help) echo "Usage: mh demo [--autonomous]"; return 0 ;;
+    local real_claude=0
+    while (( $# > 0 )); do
+        case "$1" in
+            --autonomous|--auto) autonomous=1; shift ;;
+            --real-claude)       real_claude=1; shift ;;
+            -h|--help)
+                echo "Usage: mh demo [--autonomous] [--real-claude]"
+                echo ""
+                echo "  (default)        Self-collect + parse + audit log; no tokens."
+                echo "  --autonomous     Reserved for Sub-Plan 02+ Claude Code chained run."
+                echo "  --real-claude    Self-collect + run mh-orchestrate with real Claude"
+                echo "                   on the triage subagent only (token-bounded smoke test)."
+                echo "                   Honors MH_DEMO_NONINTERACTIVE=1 to skip the y/N prompt."
+                return 0
+                ;;
+            *) fail "Unknown flag: $1"; echo "Run: mh demo --help" >&2; return 2 ;;
         esac
     done
+
+    if (( real_claude )); then
+        _demo_real_claude
+        return $?
+    fi
+
+    _demo_stub "$autonomous"
+}
+
+# ─── demo: stub-mode (default, no Claude) ───────────────────────────────────
+# Self-collects safe artifacts, ingests + classifies them, writes audit log.
+# No tokens, no LLM. Safe to run on CI / dev hosts.
+_demo_stub() {
+    local autonomous="${1:-0}"
 
     info "MemoryHound demo — collects safe artifacts from THIS host, parses them, writes audit log."
     echo ""
@@ -491,10 +517,109 @@ print(json.dumps(result))
     ok "Demo complete."
     info "Audit log: $audit_log ($(wc -l <"$audit_log") entries)"
 
-    if [[ $autonomous -eq 1 ]]; then
+    if [[ "$autonomous" == "1" ]]; then
         echo ""
         info "Autonomous phase requires LangGraph orchestrator (Sub-Plan 02). Skipping for now."
     fi
+}
+
+# ─── demo: --real-claude mode (token-bounded live smoke) ────────────────────
+# Exercises the per-node opt-in introduced by Sub-Plan 04 / T8:
+#   MH_NO_CLAUDE=1 + MH_REAL_CLAUDE_NODES=triage
+# Only the triage subagent talks to real Claude; analyze + verifier_pass stay
+# stubbed. Estimated cost: ~1500 tokens, ~$0.01.
+_demo_real_claude() {
+    info "MemoryHound demo — REAL CLAUDE smoke (triage subagent only)"
+    echo ""
+
+    # 1. Auth precondition. Mirror cmd_run semantics: API key OR ~/.claude
+    #    plus claude CLI on PATH. Bail loudly if neither auth path works.
+    if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ ! -d "$HOME/.claude" ]]; then
+        fail "No Claude auth detected."
+        info "    Set ANTHROPIC_API_KEY=sk-ant-...   OR run: claude /login"
+        return 1
+    fi
+    if ! command -v claude >/dev/null 2>&1; then
+        fail "claude CLI not on PATH. Install: https://docs.claude.com/en/docs/claude-code/quickstart"
+        return 1
+    fi
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+        info "Auth: ANTHROPIC_API_KEY"
+    else
+        info "Auth: claude CLI (subscription)"
+    fi
+
+    # 2. Token-cost confirmation. Honors MH_DEMO_NONINTERACTIVE=1 for CI.
+    if [[ "${MH_DEMO_NONINTERACTIVE:-0}" != "1" ]]; then
+        echo ""
+        warn "About to invoke real Claude on the triage subagent."
+        warn "Estimated cost: ~\$0.01 (≤1500 tokens)."
+        warn "Set MH_DEMO_NONINTERACTIVE=1 to skip this prompt in CI."
+        local response=""
+        read -r -p "Continue? [y/N] " response || true
+        case "$response" in
+            [yY]|[yY][eE][sS]) ;;
+            *) info "Aborted by user."; return 0 ;;
+        esac
+    else
+        info "MH_DEMO_NONINTERACTIVE=1 — skipping y/N prompt."
+    fi
+
+    # 3. Self-collect into the _demo case dir.
+    local case_id="_demo"
+    local case_dir="${MH_CASES_DIR}/${case_id}"
+    rm -rf "$case_dir"
+    mkdir -p "${case_dir}/input" "${case_dir}/output"
+    info "Step 1: self-collect host artifacts → ${case_dir}/input/"
+    if ! "${MH_HOME}/scripts/self-collect.sh" "${case_dir}/input" 2>&1 | sed 's/^/    /'; then
+        fail "self-collect.sh failed"
+        return 1
+    fi
+
+    # 4. Invoke the orchestrator with the per-node opt-in.
+    #    MH_NO_CLAUDE=1 keeps analyze + verifier_pass stubbed.
+    #    MH_REAL_CLAUDE_NODES=triage flips ONLY the triage node to real Claude.
+    info "Step 2: mh-orchestrate run ${case_id} --recursion-limit 30"
+    info "    MH_NO_CLAUDE=1 MH_REAL_CLAUDE_NODES=triage"
+    local start_ts=$SECONDS
+    local exit_code=0
+    MH_NO_CLAUDE=1 MH_REAL_CLAUDE_NODES=triage \
+        cmd_orchestrate "$case_id" --recursion-limit 30 || exit_code=$?
+    local elapsed=$((SECONDS - start_ts))
+
+    # 5. Report.
+    echo ""
+    info "Real-Claude smoke complete:"
+    echo "    exit_code:    $exit_code"
+    echo "    elapsed:      ${elapsed}s"
+    local audit_log="${case_dir}/output/audit.jsonl"
+    if [[ -f "$audit_log" ]]; then
+        echo "    audit lines:  $(wc -l < "$audit_log" | tr -d ' ')"
+    else
+        warn "    audit lines:  (no audit.jsonl emitted)"
+    fi
+    local msgs="${case_dir}/output/agent_messages.jsonl"
+    if [[ -f "$msgs" ]]; then
+        if command -v jq >/dev/null 2>&1; then
+            local triage_text
+            triage_text=$(jq -r '
+                select((.from_agent == "WindowsAgent" or .from_agent == "MacOSAgent" or .from_agent == "LinuxAgent")
+                       and .role == "response")
+                | .content
+            ' "$msgs" 2>/dev/null | head -1)
+            if [[ -n "$triage_text" ]]; then
+                echo "    triage final: $triage_text"
+            else
+                warn "    triage final: (no response message from triage subagent)"
+            fi
+        else
+            warn "    triage final: (jq not installed; skipping extraction)"
+        fi
+    else
+        warn "    agent_messages.jsonl not found at ${msgs}"
+    fi
+
+    return "$exit_code"
 }
 
 # ─── help ────────────────────────────────────────────────────────────────────
