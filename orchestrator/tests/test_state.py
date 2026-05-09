@@ -50,3 +50,17 @@ def test_state_roundtrip_serializes_diamond_graph() -> None:
     assert s2["attack_techniques"] == ["T1003.001"]
     assert s2["csf_subcategories_satisfied"] == {"RS.MA-03"}
     assert s2["diamond_graph"].has_edge("attacker", "8.8.8.8")
+
+
+def test_write_checkpoint_creates_state_json_and_history(tmp_path):
+    from mh_orchestrator.persistence import append_history, write_checkpoint
+    s = new_state("case-001")
+    s["_output_dir"] = str(tmp_path)
+    s["phase"] = "triage"
+    write_checkpoint(s, tmp_path)
+    append_history(s, tmp_path, node="session_init")
+    assert (tmp_path / "state.json").exists()
+    assert (tmp_path / "state.history.jsonl").exists()
+    line = (tmp_path / "state.history.jsonl").read_text().strip()
+    assert '"node":"session_init"' in line.replace(" ", "")
+    assert '"phase":"triage"' in line.replace(" ", "")
