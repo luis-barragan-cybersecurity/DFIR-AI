@@ -76,6 +76,13 @@ class IncidentState(TypedDict, total=False):
     # Internal — not in §11.1 but needed for plumbing
     _node_history: list[str]
     _output_dir: str
+    _detected_os: Literal["windows", "macos", "linux", "unknown"]
+    _analyze_iter: int
+    _rca_complete: bool
+    _reinfection_detected: bool
+    _post_restore_alarms: bool
+    _verifier_complete: bool
+    _findings: list[dict[str, Any]]
 
 
 def new_state(incident_id: str) -> IncidentState:
@@ -95,6 +102,13 @@ def new_state(incident_id: str) -> IncidentState:
         "evidence_chain": [],
         "_node_history": [],
         "_output_dir": "",
+        "_detected_os": "unknown",
+        "_analyze_iter": 0,
+        "_rca_complete": False,
+        "_reinfection_detected": False,
+        "_post_restore_alarms": False,
+        "_verifier_complete": False,
+        "_findings": [],
     })
 
 
@@ -115,6 +129,13 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "evidence_chain": [asdict(h) for h in s["evidence_chain"]],
         "_node_history": list(s.get("_node_history", [])),
         "_output_dir": s.get("_output_dir", ""),
+        "_detected_os": s.get("_detected_os", "unknown"),
+        "_analyze_iter": s.get("_analyze_iter", 0),
+        "_rca_complete": s.get("_rca_complete", False),
+        "_reinfection_detected": s.get("_reinfection_detected", False),
+        "_post_restore_alarms": s.get("_post_restore_alarms", False),
+        "_verifier_complete": s.get("_verifier_complete", False),
+        "_findings": list(s.get("_findings", [])),
     }
 
 
@@ -134,4 +155,11 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["evidence_chain"] = [HashChainEntry(**h) for h in d["evidence_chain"]]
     s["_node_history"] = list(d.get("_node_history", []))
     s["_output_dir"] = d.get("_output_dir", "")
+    s["_detected_os"] = d.get("_detected_os", "unknown")
+    s["_analyze_iter"] = d.get("_analyze_iter", 0)
+    s["_rca_complete"] = d.get("_rca_complete", False)
+    s["_reinfection_detected"] = d.get("_reinfection_detected", False)
+    s["_post_restore_alarms"] = d.get("_post_restore_alarms", False)
+    s["_verifier_complete"] = d.get("_verifier_complete", False)
+    s["_findings"] = list(d.get("_findings", []))
     return s

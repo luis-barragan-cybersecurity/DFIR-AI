@@ -59,3 +59,38 @@ def test_write_checkpoint_creates_state_json_and_history(tmp_path):
     line = (tmp_path / "state.history.jsonl").read_text().strip()
     assert '"node":"session_init"' in line.replace(" ", "")
     assert '"phase":"triage"' in line.replace(" ", "")
+
+
+def test_new_state_has_internal_control_flags() -> None:
+    s = new_state("case-001")
+    assert s["_detected_os"] == "unknown"
+    assert s["_analyze_iter"] == 0
+    assert s["_rca_complete"] is False
+    assert s["_reinfection_detected"] is False
+    assert s["_post_restore_alarms"] is False
+    assert s["_verifier_complete"] is False
+    assert s["_findings"] == []
+
+
+def test_state_roundtrip_preserves_internal_flags() -> None:
+    s = new_state("case-001")
+    s["_detected_os"] = "windows"
+    s["_analyze_iter"] = 2
+    s["_rca_complete"] = True
+    s["_reinfection_detected"] = True
+    s["_post_restore_alarms"] = True
+    s["_verifier_complete"] = True
+    s["_findings"].append({"finding_id": "F-001", "claim": "test"})
+
+    blob = serialize_state(s)
+    import json
+    json.dumps(blob)  # JSON-serializable
+    s2 = deserialize_state(blob)
+
+    assert s2["_detected_os"] == "windows"
+    assert s2["_analyze_iter"] == 2
+    assert s2["_rca_complete"] is True
+    assert s2["_reinfection_detected"] is True
+    assert s2["_post_restore_alarms"] is True
+    assert s2["_verifier_complete"] is True
+    assert s2["_findings"] == [{"finding_id": "F-001", "claim": "test"}]
