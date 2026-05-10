@@ -35,7 +35,7 @@ info()   { echo -e "${BOLD}»${NC} $*"; }
 # consume the prompt as another tool name if passed positionally.
 claude_run() {
     local prompt="$1"
-    local allowed="mcp__protocol_sift__hash,mcp__protocol_sift__audit_append,mcp__protocol_sift__finding_record,mcp__protocol_sift__os_detect,mcp__protocol_sift__magic_check,mcp__protocol_sift__win_registry_get,mcp__protocol_sift__win_prefetch_parse,mcp__protocol_sift__win_evtx_query,mcp__protocol_sift__win_lnk_parse,mcp__protocol_sift__mac_plist_get,mcp__protocol_sift__mac_knowledgec_query,Read,Glob,Grep,TodoWrite"
+    local allowed="mcp__protocol_sift__hash,mcp__protocol_sift__audit_append,mcp__protocol_sift__finding_record,mcp__protocol_sift__os_detect,mcp__protocol_sift__magic_check,mcp__protocol_sift__win_registry_get,mcp__protocol_sift__win_prefetch_parse,mcp__protocol_sift__win_evtx_query,mcp__protocol_sift__win_lnk_parse,mcp__protocol_sift__mac_plist_get,mcp__protocol_sift__mac_knowledgec_query,mcp__protocol_sift__memory_volatility,Read,Write,Glob,Grep,TodoWrite"
 
     # Write resolved mcp-config at runtime — claude doesn't substitute
     # ${CLAUDE_PROJECT_DIR} in --mcp-config files.
@@ -58,7 +58,10 @@ claude_run() {
 }
 EOF
     export CLAUDE_PROJECT_DIR="$MH_HOME"
-    trap 'rm -f "$mcp_cfg"' RETURN
+    # Substitute $mcp_cfg now (at trap-set time) so the trap body is
+    # self-contained at RETURN — `local mcp_cfg` is out of scope by then,
+    # and `set -u` would error on a bare $mcp_cfg lookup.
+    trap "rm -f '$mcp_cfg'" RETURN
 
     if [[ "${MH_CLAUDE_HEADLESS:-0}" == "1" ]]; then
         # Headless: -p print mode for CI/scripts. Silent. Use MH_CLAUDE_HEADLESS=1.
@@ -258,6 +261,13 @@ cmd_run() {
         return 2
     fi
 
+    # Fresh cycle: every investigation starts with a clean output dir so
+    # findings.json / narrative.md / audit.jsonl never carry state from a
+    # prior run.
+    if [[ -d "$output_dir" ]] && [[ -n "$(ls -A "$output_dir" 2>/dev/null)" ]]; then
+        info "Resetting prior output for fresh cycle"
+    fi
+    rm -rf "$output_dir"
     mkdir -p "$output_dir"
 
     if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ ! -d "$HOME/.claude" ]]; then
@@ -306,10 +316,20 @@ cmd_orchestrate() {
 
     local case_dir="${MH_CASES_DIR}/${case_id}"
     local input_dir="${case_dir}/input"
+    local output_dir="${case_dir}/output"
     if [[ ! -d "$input_dir" ]] || [[ -z "$(ls -A "$input_dir" 2>/dev/null)" ]]; then
         fail "No evidence at ${input_dir}"
         return 2
     fi
+
+    # Fresh cycle: same contract as `mh run` — every investigation starts
+    # with a clean output dir so LangGraph state.json / audit.jsonl /
+    # findings.json never carry over from a prior cycle.
+    if [[ -d "$output_dir" ]] && [[ -n "$(ls -A "$output_dir" 2>/dev/null)" ]]; then
+        info "Resetting prior output for fresh cycle"
+    fi
+    rm -rf "$output_dir"
+    mkdir -p "$output_dir"
 
     info "Orchestrating case ${case_id} via LangGraph"
     export MH_HOME EVIDENCE_PATH="$input_dir" CASE_ID="$case_id"
