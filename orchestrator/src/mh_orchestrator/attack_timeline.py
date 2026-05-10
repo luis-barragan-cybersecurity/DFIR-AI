@@ -12,6 +12,7 @@ The renderer is fully deterministic (no LLM) so it can be unit-tested.
 
 from __future__ import annotations
 
+import re
 from typing import TypedDict
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -149,6 +150,184 @@ def order_techniques(technique_ids: list[str]) -> list[TimelineEntry]:
             "label": f"Unmapped<br/>{tid}",
         })
     return entries
+
+
+_ISO_RX = re.compile(r"\b(20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\b")
+
+# finding_id → section mapping. Keep small and readable; "Other" catches
+# anything we haven't classified yet (no silent loss).
+_SECTION_RULES: tuple[tuple[str, str], ...] = (
+    ("rdp",          "RDP exposure"),
+    ("listener",     "RDP exposure"),
+    ("logon",        "Intrusion"),
+    ("interactive",  "Intrusion"),
+    ("burst",        "Intrusion"),
+    ("device",       "Intrusion"),
+    ("onedrive",     "Exfiltration surface"),
+    ("cloud",        "Exfiltration surface"),
+    ("projects",     "Exfiltration surface"),
+    ("downloads",    "Exfiltration surface"),
+    ("sharepoint",   "Exfiltration surface"),
+    ("mrc",          "Acquisition"),
+    ("capture",      "Acquisition"),
+    ("os",           "Pre-incident"),
+    ("gap",          "Gaps"),
+    ("injection",    "Sanity"),
+    ("shells",       "Sanity"),
+)
+
+
+# Known-acronym set — preserved in uppercase when humanizing finding IDs
+# so labels like "RDP listener" don't degrade to "Rdp listener".
+_ACRONYMS: frozenset[str] = frozenset({
+    "rdp", "srl", "os", "ir", "mrc", "est", "edt", "utc", "pst", "pdt",
+    "tcp", "udp", "smb", "rpc", "lan", "vpn", "rdp", "ssh", "ftp", "http",
+    "https", "dns", "dhcp", "tls", "ssl", "api", "url", "uri", "vm",
+    "iam", "att&ck", "lsass", "ntlm", "evtx", "lnk", "pf",
+    "kitt",   # case-specific acronym we want kept uppercase
+})
+
+
+def humanize_finding_id(finding_id: str) -> str:
+    """F-007-interactive-logon-marker → "Interactive logon marker".
+
+    Strips the `F-NNN-` prefix, converts dashes to spaces, capitalises the
+    first letter, and upper-cases recognised acronyms. Returns the raw
+    `finding_id` if the shape doesn't match.
+    """
+    if not finding_id:
+        return "(unnamed)"
+    parts = finding_id.split("-", 2)
+    if len(parts) == 3 and parts[0].upper() == "F" and parts[1].isdigit():
+        words = parts[2].replace("-", " ").strip().split()
+        if not words:
+            return finding_id
+        out_words: list[str] = []
+        for i, w in enumerate(words):
+            if w.lower() in _ACRONYMS:
+                out_words.append(w.upper())
+            elif i == 0:
+                out_words.append(w[:1].upper() + w[1:])
+            else:
+                out_words.append(w)
+        return " ".join(out_words)
+    return finding_id
+
+
+def section_for_finding(finding_id: str) -> str:
+    """Bucket a finding into a coarse incident-phase section based on
+    keyword match in its id. The label set is fixed so all callers stay
+    consistent across the report and tests.
+    """
+    fid_lc = (finding_id or "").lower()
+    for keyword, section in _SECTION_RULES:
+        if keyword in fid_lc:
+            return section
+    return "Other"
+
+
+def extract_time_anchors(findings: list[dict]) -> list[tuple[str, str, str, str]]:
+    """Pull `(start_iso, end_iso_or_blank, finding_id, section)` tuples.
+
+    For each finding:
+      - Scan `claim` for ISO-8601 UTC stamps.
+      - First stamp = start; second (if present) = end. Subsequent stamps
+        are dropped — Gantt tasks are start+end, not arbitrary multi-point.
+      - Use the humanized `finding_id` (NOT surrounding text) as the
+        label so the chart is readable instead of looking like a torn page.
+      - Section is derived from the finding_id keyword bucket.
+
+    Sorted ascending by start time; ties broken by finding_id.
+    """
+    out: list[tuple[str, str, str, str]] = []
+    for f in findings:
+        claim = f.get("claim") or ""
+        fid = f.get("finding_id") or "F-?"
+        stamps = [m.group(1) for m in _ISO_RX.finditer(claim)]
+        if not stamps:
+            continue
+        start = stamps[0]
+        end = stamps[1] if len(stamps) > 1 else ""
+        out.append((start, end, fid, section_for_finding(fid)))
+    out.sort(key=lambda t: (t[0], t[2]))
+    return out
+
+
+def render_gantt(
+    anchors: list[tuple[str, str, str, str]],
+    *,
+    title: str = "Incident Timeline",
+    default_duration_min: int = 1,
+) -> str:
+    """Build a Mermaid `gantt` block from time anchors.
+
+    Each anchor renders as one task. If the anchor carries an `end_iso`,
+    the task spans `start..end`; otherwise it gets `default_duration_min`
+    minutes so the bar is visible on the axis. Tasks are grouped under
+    their section header in fixed phase order so the chart reads
+    Pre-incident → RDP → Intrusion → Exfil → Acquisition top-down.
+
+    Backwards-compat: if anchors are 3-tuples (legacy form before sections
+    were added), each is upgraded to a 4-tuple with section "Events".
+    """
+    if not anchors:
+        return (
+            "```mermaid\n"
+            "gantt\n"
+            f"    title {title}\n"
+            "    dateFormat YYYY-MM-DDTHH:mm:ssZ\n"
+            "    section Events\n"
+            "    No timestamped events found :placeholder, 2020-01-01T00:00:00Z, 1m\n"
+            "```\n"
+        )
+
+    # Upgrade legacy 3-tuples for back-compat.
+    upgraded: list[tuple[str, str, str, str]] = []
+    for a in anchors:
+        if len(a) == 3:
+            ts, _label_unused, fid = a
+            upgraded.append((ts, "", fid, section_for_finding(fid)))
+        else:
+            upgraded.append(a)
+
+    # Stable section order — phases that don't appear are skipped.
+    phase_order = (
+        "Pre-incident", "RDP exposure", "Intrusion",
+        "Exfiltration surface", "Acquisition", "Gaps", "Sanity", "Other",
+    )
+
+    lines = [
+        "```mermaid",
+        "gantt",
+        f"    title {title}",
+        "    dateFormat YYYY-MM-DDTHH:mm:ssZ",
+        "    axisFormat %m-%d %H:%M",
+    ]
+
+    by_section: dict[str, list[tuple[str, str, str, str]]] = {}
+    for ts, end, fid, section in upgraded:
+        by_section.setdefault(section, []).append((ts, end, fid, section))
+
+    for phase in phase_order:
+        rows = by_section.get(phase, [])
+        if not rows:
+            continue
+        lines.append(f"    section {phase}")
+        for ts, end, fid, _section in rows:
+            label = humanize_finding_id(fid)
+            # Mermaid uses `:` as the task separator, so any colon inside
+            # the label breaks the parser; rewrite to en-dash.
+            label = label.replace(":", "–")
+            stable_id = fid.replace(" ", "_")
+            if end and end > ts:
+                lines.append(f"    {label} :{stable_id}, {ts}, {end}")
+            else:
+                lines.append(
+                    f"    {label} :{stable_id}, {ts}, {default_duration_min}m",
+                )
+
+    lines.append("```")
+    return "\n".join(lines) + "\n"
 
 
 def render_mermaid(technique_ids: list[str]) -> str:

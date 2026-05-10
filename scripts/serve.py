@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -162,15 +163,16 @@ article hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; 
     padding: 12px 16px; border-radius: 4px; margin-bottom: 16px;
     font-size: 13px;
 }
-.chain-entry {
+.audit-entry {
     background: var(--code-bg); border: 1px solid var(--border);
     border-radius: 4px; padding: 10px 14px; margin-bottom: 6px;
     font-family: ui-monospace, monospace; font-size: 12px;
     overflow-x: auto;
 }
-.chain-entry .seq { color: var(--accent); font-weight: 600; }
-.chain-entry .event { color: var(--good); }
-.chain-entry .hash { color: var(--muted); }
+.audit-entry .event { color: var(--accent); font-weight: 600; }
+.audit-entry .ts { color: var(--muted); }
+.audit-entry .from { color: var(--good); }
+.audit-entry .to { color: var(--warn); }
 """
 
 
@@ -182,6 +184,17 @@ def page_layout(title: str, body: str, breadcrumb: str = "") -> bytes:
 <meta charset="UTF-8">
 <title>{html.escape(title)} — MemoryHound</title>
 <style>{CSS}</style>
+<style>
+.mermaid {{
+  background: #1f2430;
+  border: 1px solid #2a3142;
+  border-radius: 6px;
+  padding: 18px;
+  margin: 18px 0;
+  overflow-x: auto;
+}}
+.mermaid svg {{ max-width: 100%; height: auto; }}
+</style>
 </head>
 <body>
 <div class="shell">
@@ -192,17 +205,75 @@ def page_layout(title: str, body: str, breadcrumb: str = "") -> bytes:
 {crumb_html}
 {body}
 </div>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  // Mermaid 10 — initialize on load. Dark theme matches MemoryHound's
+  // monokai-adjacent palette so timelines stay readable next to code blocks.
+  if (typeof mermaid !== 'undefined') {{
+    mermaid.initialize({{
+      startOnLoad: true,
+      theme: 'dark',
+      flowchart: {{ curve: 'basis', useMaxWidth: true }},
+      gantt: {{ useMaxWidth: true, fontSize: 12 }},
+      timeline: {{ useMaxWidth: true }},
+    }});
+  }}
+</script>
 </body>
 </html>""".encode()
 
 
+_MERMAID_FENCE_RE = re.compile(
+    r"```mermaid\s*\n(.*?)\n```", re.DOTALL,
+)
+
+
+def _extract_mermaid_blocks(text: str) -> tuple[str, list[str]]:
+    """Pull mermaid fenced blocks out of the markdown source BEFORE handing
+    to python-markdown (which would syntax-highlight them as plain code).
+
+    Replaces each block with a unique placeholder; returns the rewritten
+    markdown plus the list of original mermaid sources in order.
+    """
+    blocks: list[str] = []
+
+    def _take(match: re.Match) -> str:
+        idx = len(blocks)
+        blocks.append(match.group(1))
+        return f"\n\nMERMAID_PLACEHOLDER_{idx}\n\n"
+
+    rewritten = _MERMAID_FENCE_RE.sub(_take, text)
+    return rewritten, blocks
+
+
+def _inject_mermaid_divs(html_text: str, blocks: list[str]) -> str:
+    """After python-markdown rendering, swap each placeholder back to a
+    `<div class="mermaid">…</div>` so the Mermaid.js script we load in
+    page_layout can render it client-side.
+    """
+    for idx, block in enumerate(blocks):
+        # python-markdown wraps single-line placeholders in <p>...</p>.
+        for variant in (
+            f"<p>MERMAID_PLACEHOLDER_{idx}</p>",
+            f"MERMAID_PLACEHOLDER_{idx}",
+        ):
+            html_text = html_text.replace(
+                variant,
+                f'<div class="mermaid">{html.escape(block)}</div>',
+                1,
+            )
+    return html_text
+
+
 def render_md_file(path: Path) -> str:
     text = path.read_text()
-    return md.markdown(
-        text,
+    rewritten, mermaid_blocks = _extract_mermaid_blocks(text)
+    rendered = md.markdown(
+        rewritten,
         extensions=["tables", "fenced_code", "toc", "sane_lists", "nl2br", "codehilite"],
         extension_configs={"codehilite": {"noclasses": True, "pygments_style": "monokai"}},
     )
+    return _inject_mermaid_divs(rendered, mermaid_blocks)
 
 
 def render_json_file(path: Path) -> str:
@@ -213,7 +284,8 @@ def render_json_file(path: Path) -> str:
         return f"<p>JSON parse error: {html.escape(str(exc))}</p>"
 
 
-def render_chain_jsonl(path: Path) -> str:
+def render_audit_jsonl(path: Path) -> str:
+    """Plain append-only audit log — {ts, event, data} entries."""
     rows: list[str] = []
     for line in path.read_text().splitlines():
         line = line.strip()
@@ -223,24 +295,97 @@ def render_chain_jsonl(path: Path) -> str:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        seq = entry.get("seq", "?")
         event = entry.get("event", "?")
         ts = entry.get("ts", "")
-        h = (entry.get("hash") or "")[:16]
-        prev = (entry.get("prev_hash") or "")[:16]
         data_str = json.dumps(entry.get("data", {}), default=str)
-        if len(data_str) > 200:
-            data_str = data_str[:197] + "..."
+        if len(data_str) > 240:
+            data_str = data_str[:237] + "..."
         rows.append(
-            f'<div class="chain-entry">'
-            f'<span class="seq">seq={seq}</span> '
+            f'<div class="audit-entry">'
             f'<span class="event">{html.escape(event)}</span> '
-            f'<span class="hash">prev={prev}… → hash={h}…</span> '
-            f'<span style="color:var(--muted)"> @ {html.escape(ts)}</span>'
+            f'<span class="ts">@ {html.escape(ts)}</span>'
             f'<br><code>{html.escape(data_str)}</code>'
             f'</div>'
         )
-    return "<h2>Chain of Custody</h2>" + "".join(rows) if rows else "<p>Empty chain.</p>"
+    title = "<h2>Audit Log</h2>"
+    return title + "".join(rows) if rows else title + "<p>Empty audit log.</p>"
+
+
+def render_messages_jsonl(path: Path) -> str:
+    """Inter-agent message stream — {ts, from_agent, to_agent, role, content, metadata}."""
+    rows: list[str] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ts = entry.get("ts", "")
+        frm = entry.get("from_agent", "?")
+        to = entry.get("to_agent", "?")
+        role = entry.get("role", "")
+        content = entry.get("content", "")
+        meta_str = json.dumps(entry.get("metadata", {}), default=str)
+        if len(meta_str) > 200:
+            meta_str = meta_str[:197] + "..."
+        rows.append(
+            f'<div class="audit-entry">'
+            f'<span class="from">{html.escape(frm)}</span> → '
+            f'<span class="to">{html.escape(to)}</span> '
+            f'<span class="event">[{html.escape(role)}]</span> '
+            f'<span class="ts">@ {html.escape(ts)}</span>'
+            f'<br>{html.escape(content)}'
+            f'<br><code>{html.escape(meta_str)}</code>'
+            f'</div>'
+        )
+    title = "<h2>Agent Messages</h2>"
+    return title + "".join(rows) if rows else title + "<p>No messages.</p>"
+
+
+def render_history_jsonl(path: Path) -> str:
+    """Per-node state snapshots — one JSON object per line."""
+    rows: list[str] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        node = entry.get("node", "?")
+        phase = entry.get("phase", "?")
+        ts = entry.get("ts", "")
+        rows.append(
+            f'<div class="audit-entry">'
+            f'<span class="event">{html.escape(node)}</span> '
+            f'<span class="from">phase={html.escape(phase)}</span> '
+            f'<span class="ts">@ {html.escape(ts)}</span>'
+            f'</div>'
+        )
+    title = "<h2>State History</h2>"
+    return title + "".join(rows) if rows else title + "<p>No history entries.</p>"
+
+
+# Recognized output artifacts (path -> (tab label, renderer kind)). Order
+# matters — used as the tab order in case views.
+TABS: list[tuple[str, str, str]] = [
+    ("Summary",     "incident_summary.md",        "md"),
+    ("Narrative",   "narrative.md",               "md"),
+    ("Accuracy",    "accuracy-report.md",         "md"),
+    ("Findings",    "findings.json",              "json"),
+    ("Lessons",     "lessons_learned.md",         "md"),
+    ("Compliance",  "compliance_map.json",        "json"),
+    ("Remediation", "remediation_plan.json",      "json"),
+    ("Containment", "containment_actions.jsonl",  "audit"),
+    ("Recovery",    "recovery_verification.json", "json"),
+    ("State",       "state.json",                 "json"),
+    ("History",     "state.history.jsonl",        "history"),
+    ("Messages",    "agent_messages.jsonl",       "messages"),
+    ("Audit",       "audit.jsonl",                "audit"),
+]
 
 
 def case_card(case_dir: Path) -> str:
@@ -252,17 +397,19 @@ def case_card(case_dir: Path) -> str:
     files = list(out.glob("*"))
     file_count = len(files)
     pills: list[str] = []
-    has = lambda n: (out / n).exists()
-    if has("summary.md"):
-        pills.append(f'<a class="pill good" href="/case/{cid}/summary.md">summary</a>')
-    if has("narrative.md"):
-        pills.append(f'<a class="pill" href="/case/{cid}/narrative.md">narrative</a>')
-    if has("accuracy-report.md"):
-        pills.append(f'<a class="pill" href="/case/{cid}/accuracy-report.md">accuracy</a>')
-    if has("findings.json"):
-        pills.append(f'<a class="pill" href="/case/{cid}/findings.json">findings</a>')
-    if has("audit.jsonl"):
-        pills.append(f'<a class="pill warn" href="/case/{cid}/audit.jsonl">audit</a>')
+    pill_classes = {
+        "Summary": "good",
+        "Findings": "",
+        "Audit": "warn",
+        "Compliance": "",
+    }
+    for label, fname, _kind in TABS:
+        if (out / fname).exists() and label in pill_classes:
+            cls = pill_classes[label]
+            cls_attr = f"pill {cls}".strip()
+            pills.append(
+                f'<a class="{cls_attr}" href="/case/{cid}/{fname}">{label.lower()}</a>'
+            )
 
     inputs = case_dir / "input"
     in_count = sum(1 for _ in inputs.rglob("*") if _.is_file()) if inputs.exists() else 0
@@ -340,10 +487,10 @@ class Handler(BaseHTTPRequestHandler):
     def _case_index(self, case_id: str, case_dir: Path) -> None:
         out = case_dir / "output"
         crumb = '<a href="/">cases</a> / ' + html.escape(case_id)
-        if (out / "summary.md").exists():
-            return self._case_file(case_id, case_dir, "summary.md")
-        if (out / "narrative.md").exists():
-            return self._case_file(case_id, case_dir, "narrative.md")
+        # Land on the first existing artifact in TABS order.
+        for _label, fname, _kind in TABS:
+            if (out / fname).exists():
+                return self._case_file(case_id, case_dir, fname)
         body = '<article><p>No reports yet for this case.</p></article>'
         self._send(200, page_layout(case_id, body, crumb))
 
@@ -355,35 +502,40 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         out = case_dir / "output"
+        kind_by_name = {fname: kind for _label, fname, kind in TABS}
         tabs: list[str] = []
-        for label, fname in [
-            ("Summary", "summary.md"),
-            ("Narrative", "narrative.md"),
-            ("Accuracy", "accuracy-report.md"),
-            ("Findings", "findings.json"),
-        ]:
+        for label, fname, _kind in TABS:
             if (out / fname).exists():
                 active = "active" if rel == fname else ""
-                tabs.append(f'<a class="tab {active}" href="/case/{case_id}/{fname}">{label}</a>')
+                tabs.append(
+                    f'<a class="tab {active}" href="/case/{case_id}/{fname}">{label}</a>'
+                )
 
-        if (out / "audit.jsonl").exists():
-            active = "active" if rel == "audit.jsonl" else ""
-            tabs.append(f'<a class="tab {active}" href="/case/{case_id}/audit.jsonl">Audit</a>')
-
-        if rel.endswith(".md"):
+        kind = kind_by_name.get(rel, "raw")
+        if kind == "md":
             content = render_md_file(target)
-            body = f'<div class="tabs">{"".join(tabs)}</div><article>{content}</article>'
+        elif kind == "json":
+            content = render_json_file(target)
+        elif kind == "audit":
+            content = render_audit_jsonl(target)
+        elif kind == "messages":
+            content = render_messages_jsonl(target)
+        elif kind == "history":
+            content = render_history_jsonl(target)
+        elif rel.endswith(".md"):
+            content = render_md_file(target)
         elif rel.endswith(".jsonl"):
-            content = render_chain_jsonl(target)
-            body = f'<div class="tabs">{"".join(tabs)}</div><article>{content}</article>'
+            content = render_audit_jsonl(target)
         elif rel.endswith(".json"):
             content = render_json_file(target)
-            body = f'<div class="tabs">{"".join(tabs)}</div><article>{content}</article>'
         else:
             content = f'<pre>{html.escape(target.read_text())}</pre>'
-            body = f'<div class="tabs">{"".join(tabs)}</div><article>{content}</article>'
 
-        crumb = f'<a href="/">cases</a> / <a href="/case/{case_id}/">{html.escape(case_id)}</a> / {html.escape(rel)}'
+        body = f'<div class="tabs">{"".join(tabs)}</div><article>{content}</article>'
+        crumb = (
+            f'<a href="/">cases</a> / '
+            f'<a href="/case/{case_id}/">{html.escape(case_id)}</a> / {html.escape(rel)}'
+        )
         self._send(200, page_layout(f"{case_id} — {rel}", body, crumb))
 
 

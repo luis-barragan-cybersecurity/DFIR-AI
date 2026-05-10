@@ -20,6 +20,7 @@ Reference: SANS DFIR Cheat Sheet Memory Forensics v2.1 (pp. 36-37) + Rekall pp. 
 8. `windows.svcscan` → suspicious services
 9. `windows.registry.printkey` for AutoStart, ImageFileExecutionOptions, etc.
 10. `windows.timeliner` → timeline integration
+11. **`windows.dumpfiles --pid <PID>` for every cloud-sync / messaging / browser / mail process present.** This is mandatory whenever a finding might claim "we can't tell from memory" about an artifact those processes touch. The high-value handle registry at `orchestrator/src/mh_orchestrator/handle_dump_registry.py` enumerates patterns to grep the dumpfiles output for: OneDrive (`*.aodl`, `downloads3.txt`, `Downloader_*.log`, per-user GUID `.dat`), Drive FS (`drive_fs.db`), Dropbox (`filecache.dbx`), Slack (`local_log_session.json`, Cache), Outlook (`*.ost/.nst`, `RoamCache`), Chrome/Edge (`History`, `Cookies`, `Web Data`, `Sessions/`, `Tabs/`), Firefox (`places.sqlite`, `sessionstore.jsonlz4`).
 
 ### macOS
 1. `mac.list_files`

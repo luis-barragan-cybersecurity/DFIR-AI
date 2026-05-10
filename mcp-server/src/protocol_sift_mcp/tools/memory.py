@@ -28,15 +28,30 @@ from typing import Any
 
 from ..sandbox import assert_input_path
 
-# 11 plugins documented in Sub-Plan 04 (T6). Anything outside this set
-# is rejected before we ever touch disk.
+# Plugin allowlist. Anything outside this set is rejected before we ever
+# touch disk. Mimikatz / credential-extraction detection requires the
+# Windows credential / handle / service / DLL plugins.
 ALLOWED_PLUGINS: frozenset[str] = frozenset(
     {
-        # Windows (4)
+        # Windows core (4)
         "windows.pslist",
         "windows.psscan",
         "windows.malfind",
         "windows.netscan",
+        # Windows credential / Mimikatz detection (6)
+        "windows.lsadump",
+        "windows.hashdump",
+        "windows.cmdline",
+        "windows.dlllist",
+        "windows.svcscan",
+        "windows.handles",
+        # Cached-file extraction — gates the "memory cap" doctrine: any
+        # process holding a handle to a high-value log/state file
+        # (OneDrive AODL, downloads3.txt, browser caches, Slack logs,
+        # etc.) MUST have its working set dumped before a finding can
+        # claim "memory cannot tell us X about that file." See
+        # docs/handle-dump-discipline + handle_dump_registry.
+        "windows.dumpfiles",
         # Linux (4)
         "linux.pslist",
         "linux.bash",
