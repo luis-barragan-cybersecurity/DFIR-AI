@@ -273,7 +273,21 @@ def render(case_dir: Path) -> str:
     # ─── 3. Attack Timeline ──────────────────────────────────────────────
     lines.append("## Attack Timeline")
     lines.append("")
+    lines.append("### Kill-chain flow")
+    lines.append("")
     lines.append(at.render_mermaid(techniques))
+
+    # Time-anchored Gantt — driven by ISO-8601 stamps inside finding claims.
+    # This is the chart owners want most: wall-clock x-axis with every
+    # observed incident event placed in real time order.
+    anchors = at.extract_time_anchors(findings)
+    if anchors:
+        lines.append("### Timeline (wall-clock from finding claims)")
+        lines.append("")
+        lines.append(at.render_gantt(
+            anchors,
+            title=f"{state.get('incident_id') or case_dir.name} — Incident Timeline",
+        ))
 
     # ─── 4. Risk Reduction Detail ────────────────────────────────────────
     lines.append("## Risk Reduction Detail")

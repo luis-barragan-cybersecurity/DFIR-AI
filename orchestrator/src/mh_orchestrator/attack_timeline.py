@@ -12,6 +12,7 @@ The renderer is fully deterministic (no LLM) so it can be unit-tested.
 
 from __future__ import annotations
 
+import re
 from typing import TypedDict
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -149,6 +150,81 @@ def order_techniques(technique_ids: list[str]) -> list[TimelineEntry]:
             "label": f"Unmapped<br/>{tid}",
         })
     return entries
+
+
+_ISO_RX = re.compile(r"\b(20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\b")
+
+
+def extract_time_anchors(findings: list[dict]) -> list[tuple[str, str, str]]:
+    """Pull (iso_timestamp, label, finding_id) tuples from finding claims.
+
+    Scans every finding's `claim` text for ISO-8601 UTC stamps; pairs each
+    with a short label derived from the surrounding sentence and the
+    finding's `finding_id`. Used by `render_gantt` to draw a timeline
+    aligned to wall-clock evidence rather than tactic ordering.
+
+    Output is sorted by timestamp ascending; ties broken by finding_id.
+    """
+    out: list[tuple[str, str, str]] = []
+    for f in findings:
+        claim = f.get("claim") or ""
+        fid = f.get("finding_id") or "F-?"
+        for m in _ISO_RX.finditer(claim):
+            ts = m.group(1)
+            # Derive a short label: the noun-phrase nearest the timestamp.
+            window = claim[max(0, m.start()-60):m.start()].rstrip(" ,—–-")
+            words = window.split()[-6:]
+            label_seed = " ".join(words) if words else fid
+            label = label_seed.strip("()[]{}\"'`,. —–-")
+            if not label:
+                label = fid
+            # Keep label short for Gantt readability (no commas, tight).
+            label = label.replace(",", " ")[:40]
+            out.append((ts, label, fid))
+    out.sort()
+    return out
+
+
+def render_gantt(
+    anchors: list[tuple[str, str, str]],
+    *,
+    title: str = "Incident Timeline",
+    default_duration_min: int = 1,
+) -> str:
+    """Build a Mermaid `gantt` block from time anchors.
+
+    Each anchor becomes a 1-minute task in section "Events" (sections can
+    be extended later by tagging anchors). Mermaid renders this as a
+    proper time-axis chart that the server page actually visualizes,
+    which the kill-chain `flowchart LR` does not.
+    """
+    if not anchors:
+        return (
+            "```mermaid\n"
+            "gantt\n"
+            f"    title {title}\n"
+            "    dateFormat YYYY-MM-DDTHH:mm:ssZ\n"
+            "    section Events\n"
+            "    No timestamped events found : 2020-01-01T00:00:00Z, 1m\n"
+            "```\n"
+        )
+    lines = [
+        "```mermaid",
+        "gantt",
+        f"    title {title}",
+        "    dateFormat YYYY-MM-DDTHH:mm:ssZ",
+        "    axisFormat %m-%d %H:%M",
+        "    section Events",
+    ]
+    for ts, label, fid in anchors:
+        # Mermaid gantt task syntax: `Label : id, start, duration`
+        safe_label = label.replace(":", "—")
+        lines.append(
+            f"    {safe_label} ({fid}) :{fid.replace(' ', '_')}, "
+            f"{ts}, {default_duration_min}m",
+        )
+    lines.append("```")
+    return "\n".join(lines) + "\n"
 
 
 def render_mermaid(technique_ids: list[str]) -> str:
