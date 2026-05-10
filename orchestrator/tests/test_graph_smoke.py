@@ -19,6 +19,7 @@ EXPECTED_ORDER = [
     "session_init",
     "detect",
     "triage",
+    "scope",
     "declare_incident",
     "analyze",
     "attack_tag",

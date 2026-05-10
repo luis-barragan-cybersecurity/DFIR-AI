@@ -1,6 +1,7 @@
 """LangGraph StateGraph for MemoryHound.
 
-Full §11.2 14-IR-node topology with five §11.3 conditional edges:
+Full §11.2 14-IR-node topology with six conditional edges (the original
+five §11.3 gates plus the verifier dissent edge):
   session_init → detect → triage
   triage --[route_after_triage]--> {suppress | declare_incident}
   declare_incident → analyze
@@ -10,13 +11,16 @@ Full §11.2 14-IR-node topology with five §11.3 conditional edges:
   human_in_loop → eradicate
   eradicate --[route_after_eradicate]--> {contain | recover}
   recover --[route_after_recover]--> {contain | lessons_learned}
-  lessons_learned → remediation → verifier_pass → session_finalize → END
+  lessons_learned → remediation → verifier_pass
+  verifier_pass --[route_after_verifier_pass]--> {analyze | session_finalize}
   suppress → session_finalize → END
 
 verifier_pass placement: locked Sub-Plan 03 decision is "single global
 Verifier pass after analyze loop terminates" — meaning AFTER all phases
 complete, between remediation and session_finalize. This supersedes any
-contrary §11.2 prose.
+contrary §11.2 prose. The dissent-driven re-route to analyze is capped at
+one revision pass via `_verifier_revision_count` (verifier_pass owns the
+cap); without the cap LangGraph would otherwise loop on stubborn dissent.
 
 The `route_after_*` functions are pure conditional-edge selectors per §11.3.
 """
@@ -123,6 +127,24 @@ def route_after_recover(state: IncidentState) -> str:
     return "lessons_learned"
 
 
+def route_after_verifier_pass(state: IncidentState) -> str:
+    """Dissent-driven self-correction edge.
+
+    The Verifier sets `_verifier_complete=True` only when it agreed with
+    every finding (or a previous revision pass already exhausted the cap).
+    If `_verifier_complete` is False, dissent is unresolved and one
+    revision pass is allowed by routing back through analyze. The cap on
+    `_verifier_revision_count` (set inside verifier_pass) prevents loops.
+
+    Returns:
+        "session_finalize" — verifier_complete (no dissent or cap reached).
+        "analyze"          — dissent + revision available → re-run analyze.
+    """
+    if state.get("_verifier_complete", False) is True:
+        return "session_finalize"
+    return "analyze"
+
+
 def _resolve_recursion_limit(arg: int | None) -> int:
     """Resolve recursion limit: explicit arg > MH_LG_RECURSION_LIMIT > default.
 
@@ -160,6 +182,10 @@ def build_graph(recursion_limit: int | None = None) -> Any:
     # Linear edges (deterministic single successor per §11.2)
     g.add_edge("session_init", "detect")
     g.add_edge("detect", "triage")
+    # scope sits between triage's non-suppress branch and declare_incident.
+    # Pure-Python extractor — populates affected_hosts / users / services /
+    # data so the contain/eradicate stack has structured targets to act on.
+    g.add_edge("scope", "declare_incident")
     g.add_edge("declare_incident", "analyze")
     g.add_edge("attack_tag", "kill_chain")
     g.add_edge("kill_chain", "d3fend_recommend")
@@ -167,14 +193,15 @@ def build_graph(recursion_limit: int | None = None) -> Any:
     g.add_edge("human_in_loop", "eradicate")
     g.add_edge("lessons_learned", "remediation")
     g.add_edge("remediation", "verifier_pass")
-    g.add_edge("verifier_pass", "session_finalize")
     g.add_edge("suppress", "session_finalize")
     g.add_edge("session_finalize", END)
 
     # §11.3 conditional edges — five gates that govern branch + loop control.
     g.add_conditional_edges(
         "triage", route_after_triage,
-        {"suppress": "suppress", "declare_incident": "declare_incident"},
+        # The "declare_incident" branch routes through scope first; suppress
+        # remains a direct exit since false positives don't need scoping.
+        {"suppress": "suppress", "declare_incident": "scope"},
     )
     g.add_conditional_edges(
         "analyze", route_after_analyze,
@@ -191,6 +218,12 @@ def build_graph(recursion_limit: int | None = None) -> Any:
     g.add_conditional_edges(
         "recover", route_after_recover,
         {"contain": "contain", "lessons_learned": "lessons_learned"},
+    )
+    # Verifier dissent → route back through analyze (capped at one revision
+    # by `_verifier_revision_count`; verifier_pass owns the cap logic).
+    g.add_conditional_edges(
+        "verifier_pass", route_after_verifier_pass,
+        {"analyze": "analyze", "session_finalize": "session_finalize"},
     )
 
     compiled = g.compile()

@@ -37,6 +37,31 @@ Use exactly these enum values: `confirmed`, `inferred`, `uncertain`, `unknown`.
 - **uncertain** — observation suggestive but not conclusive
 - **unknown** — gap. Record via `finding_record` with a single pin pointing at the artifact you couldn't conclude on and a claim describing the gap. Better than guessing.
 
+### `confidence_rationale` is MANDATORY
+
+Every `finding_record` call MUST include a `confidence_rationale` field — one sentence in the form **"X because Y"** explaining *why* this confidence level was chosen. The MCP server rejects missing/empty rationale at the schema layer.
+
+Examples that pass:
+
+- `"confirmed because corroborated across psscan EPROCESS row, netscan owner pointer, and parent-child PID consistency"`
+- `"inferred because single psscan EPROCESS recovered with internally-consistent fields and no contradicting evidence"`
+- `"uncertain because owner pointer is null on this netscan row — connection existed but originator unrecoverable"`
+- `"unknown because windows.cmdline returned empty due to ISF symbol mismatch on PsActiveProcessHead"`
+
+Owners read this field to decide whether to act on a finding. A bare confidence enum without justification is treated as a fabrication and rejected.
+
+## IR Signal Tiering — Run Tier 1 First
+
+Tools are grouped into three IR signal tiers (`mcp-server/src/protocol_sift_mcp/signal_tiers.py`). Operational IR triage spends 80% of decision value on tier-1 surface, so the TodoWrite plan must order tier-1 work first.
+
+| Tier | Surface | Run when |
+|------|---------|----------|
+| **1** | `memory_volatility`, `win_evtx_query`, `win_registry_get` | Always, on every case. These answer "what was running, who logged in, what persists" — the questions that gate scoping and containment. |
+| **2** | `win_prefetch_parse`, `win_lnk_parse`, `mac_knowledgec_query`, `linux_history_parse` | After tier 1 surfaces a lead, to corroborate execution proof, recent activity, or timeline gaps. |
+| **3** | `hash`, `os_detect`, `magic_check`, `mac_plist_get`, `audit_append`, `finding_record` | Routing + plumbing primitives; not standalone signal sources. |
+
+If you cannot answer a question with tier-1 alone, escalate to tier 2 — and record in the finding's `confidence_rationale` that you had to drop a tier (e.g., `"inferred because tier-1 cmdline plugin returned empty; corroborated via tier-2 prefetch instead"`).
+
 ## Forbidden Output Patterns
 
 Do not write: "appears to", "seems to", "likely", "probably", "possibly" without an explicit confidence enum tag immediately following. The output filter rejects these.

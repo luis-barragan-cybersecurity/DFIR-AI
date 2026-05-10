@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .. import picerl
+from .. import attack_timeline, picerl
 from ..persistence import append_history, write_checkpoint
 from ..state import IncidentState
 
@@ -92,6 +92,10 @@ def _render_incident_summary(state: IncidentState) -> str:
         f"- **Max Kill-Chain Stage Reached**: {kc_stage}/7\n"
         f"- **Phase**: {phase} ({iso})\n"
         "\n"
+        "## Attack Timeline (MITRE ATT&CK kill chain)\n"
+        "\n"
+        f"{attack_timeline.render_mermaid(techniques)}"
+        "\n"
         "## Multi-Framework Alignment\n"
         "\n"
         f"- **NIST CSF 2.0 subcategories satisfied**: {csf_str}\n"
@@ -140,6 +144,18 @@ def run(state: IncidentState) -> IncidentState:
 
     state["phase"] = "lessons"
     state["_node_history"].append(NODE_NAME)
+
+    # Canonical consolidated findings.json — write the deduped list from
+    # state["_findings"] so accuracy-report tooling (scripts/diff_findings.py)
+    # has a single authoritative artifact regardless of which subagent
+    # produced individual entries via finding_record.
+    findings = list(state.get("_findings", []) or [])
+    findings_path = out / "findings.json"
+    findings_path.write_text(json.dumps(findings, indent=2, sort_keys=True))
+    record_audit(
+        state, event="findings_consolidated",
+        data={"path": findings_path.name, "count": len(findings)},
+    )
 
     # §11.4 item 9 — Multi-framework compliance map
     compliance_map = _build_compliance_map(state)

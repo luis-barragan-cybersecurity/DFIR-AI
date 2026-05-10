@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .. import csf_tags, picerl
+from .. import containment_commands, csf_tags, picerl
 from ..blast_radius import BlastRadius
 from ..persistence import append_history, write_checkpoint
 from ..state import IncidentState
@@ -31,8 +31,16 @@ def _distinct_user_count(state: IncidentState) -> int:
     return len(users) or 1
 
 
+_DEFAULT_ACTION_FOR_TACTIC = {
+    "short_term": "isolate_host",
+    "system_backup": "snapshot_evidence",
+    "long_term": "rotate_credentials",
+}
+
+
 def _build_recommendations(state: IncidentState) -> list[dict]:
     user_n = _distinct_user_count(state)
+    detected_os = state.get("_detected_os", "unknown")
     recs: list[tuple[str, str, BlastRadius]] = [
         (
             "short_term",
@@ -52,7 +60,7 @@ def _build_recommendations(state: IncidentState) -> list[dict]:
     ]
     out: list[dict] = []
     for idx, (tactic, action, br) in enumerate(recs, start=1):
-        out.append({
+        rec: dict = {
             "id": f"CONTAIN-{idx}",
             "tactic": tactic,
             "action": action,
@@ -63,7 +71,55 @@ def _build_recommendations(state: IncidentState) -> list[dict]:
                 "score": br.score(),
             },
             "advisory_only": True,
+        }
+        # Attach platform-specific runnable command for the default action
+        # if we have one; owners need executable text, not just prose.
+        default_verb = _DEFAULT_ACTION_FOR_TACTIC.get(tactic)
+        if default_verb:
+            cmd = containment_commands.commands_for_default_action(
+                default_verb, detected_os=detected_os,
+            )
+            if cmd is not None:
+                rec["runnable_command"] = {
+                    "verb": cmd["verb"],
+                    "platform": cmd["platform"],
+                    "command": cmd["command"],
+                    "reversibility": cmd["reversibility"],
+                    "placeholder_hints": cmd["placeholder_hints"],
+                }
+        out.append(rec)
+
+    # Per-technique commands (T#### → platform-specific one-liners) appended
+    # as additional recommendations so they show up in containment_actions.jsonl
+    # alongside the defaults.
+    techniques = state.get("attack_techniques", []) or []
+    technique_cmds = containment_commands.commands_for_techniques(
+        techniques, detected_os=detected_os,
+    )
+    next_idx = len(out) + 1
+    for cmd in technique_cmds:
+        out.append({
+            "id": f"CONTAIN-{next_idx}",
+            "tactic": "technique_specific",
+            "action": cmd["description"],
+            "technique_id": cmd["technique_id"],
+            "blast_radius": {
+                "hosts": 1, "users": 0, "services": 1,
+                "score": BlastRadius(
+                    hosts_affected=1, users_affected=0, services_affected=1,
+                ).score(),
+            },
+            "advisory_only": True,
+            "runnable_command": {
+                "verb": cmd["verb"],
+                "platform": cmd["platform"],
+                "command": cmd["command"],
+                "reversibility": cmd["reversibility"],
+                "placeholder_hints": cmd["placeholder_hints"],
+            },
         })
+        next_idx += 1
+
     return out
 
 

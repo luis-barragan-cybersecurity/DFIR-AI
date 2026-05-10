@@ -8,21 +8,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, TypedDict, cast
 
-import networkx as nx
-
-Severity = Literal["low", "medium", "high", "critical"]
+Severity = Literal["low", "medium", "high", "critical", "unknown"]
 Phase = Literal[
     "detect", "triage", "analyze", "contain",
     "eradicate", "recover", "lessons",
 ]
-
-
-@dataclass
-class IOC:
-    type: str           # ip | domain | hash | filepath | registry_key
-    value: str
-    first_seen: str = ""
-    confidence: str = "uncertain"
 
 
 @dataclass
@@ -51,22 +41,12 @@ class Control:
     rationale: str = ""
 
 
-@dataclass
-class HashChainEntry:
-    """Plain hash-only entry — no chain linking (Sub-Plan 01 removed cryptographic chaining)."""
-    artifact_path: str
-    sha256: str
-    ts: str
-
-
 class IncidentState(TypedDict, total=False):
     incident_id: str
     severity: Severity
     phase: Phase
     kill_chain_stage: int
     attack_techniques: list[str]
-    diamond_graph: nx.DiGraph
-    iocs: list[IOC]
     forensic_artifacts: list[Artifact]
     csf_subcategories_satisfied: set[str]
     iso27035_phase: str
@@ -75,7 +55,13 @@ class IncidentState(TypedDict, total=False):
     containment_actions: list[dict[str, Any]]
     eradication_actions: list[dict[str, Any]]
     recovery_actions: list[dict[str, Any]]
-    evidence_chain: list[HashChainEntry]
+    # Operational scope — populated by the scope node between triage and
+    # declare_incident. The contain/eradicate/recover stack reads these
+    # to pre-fill containment commands without re-deriving from finding text.
+    affected_hosts: list[str]
+    affected_users: list[str]
+    affected_services: list[str]
+    affected_data: list[str]
     # Internal — not in §11.1 but needed for plumbing
     _node_history: list[str]
     _output_dir: str
@@ -86,6 +72,7 @@ class IncidentState(TypedDict, total=False):
     _post_restore_alarms: bool
     _verifier_complete: bool
     _verifier_decisions: list[dict[str, Any]]
+    _verifier_revision_count: int
     _findings: list[dict[str, Any]]
     _max_blast_score: int
     human_approval_required: bool
@@ -98,8 +85,6 @@ def new_state(incident_id: str) -> IncidentState:
         "phase": "detect",
         "kill_chain_stage": 0,
         "attack_techniques": [],
-        "diamond_graph": nx.DiGraph(),
-        "iocs": [],
         "forensic_artifacts": [],
         "csf_subcategories_satisfied": set(),
         "iso27035_phase": "detection_and_reporting",
@@ -108,7 +93,10 @@ def new_state(incident_id: str) -> IncidentState:
         "containment_actions": [],
         "eradication_actions": [],
         "recovery_actions": [],
-        "evidence_chain": [],
+        "affected_hosts": [],
+        "affected_users": [],
+        "affected_services": [],
+        "affected_data": [],
         "_node_history": [],
         "_output_dir": "",
         "_detected_os": "unknown",
@@ -118,6 +106,7 @@ def new_state(incident_id: str) -> IncidentState:
         "_post_restore_alarms": False,
         "_verifier_complete": False,
         "_verifier_decisions": [],
+        "_verifier_revision_count": 0,
         "_findings": [],
         "_max_blast_score": 0,
         "human_approval_required": False,
@@ -131,8 +120,6 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "phase": s["phase"],
         "kill_chain_stage": s["kill_chain_stage"],
         "attack_techniques": list(s["attack_techniques"]),
-        "diamond_graph": nx.node_link_data(s["diamond_graph"], edges="edges"),
-        "iocs": [asdict(i) for i in s["iocs"]],
         "forensic_artifacts": [asdict(a) for a in s["forensic_artifacts"]],
         "csf_subcategories_satisfied": sorted(s["csf_subcategories_satisfied"]),
         "iso27035_phase": s["iso27035_phase"],
@@ -141,7 +128,10 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "containment_actions": list(s.get("containment_actions", [])),
         "eradication_actions": list(s.get("eradication_actions", [])),
         "recovery_actions": list(s.get("recovery_actions", [])),
-        "evidence_chain": [asdict(h) for h in s["evidence_chain"]],
+        "affected_hosts": list(s.get("affected_hosts", [])),
+        "affected_users": list(s.get("affected_users", [])),
+        "affected_services": list(s.get("affected_services", [])),
+        "affected_data": list(s.get("affected_data", [])),
         "_node_history": list(s.get("_node_history", [])),
         "_output_dir": s.get("_output_dir", ""),
         "_detected_os": s.get("_detected_os", "unknown"),
@@ -151,6 +141,7 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "_post_restore_alarms": s.get("_post_restore_alarms", False),
         "_verifier_complete": s.get("_verifier_complete", False),
         "_verifier_decisions": list(s.get("_verifier_decisions", [])),
+        "_verifier_revision_count": s.get("_verifier_revision_count", 0),
         "_findings": list(s.get("_findings", [])),
         "_max_blast_score": s.get("_max_blast_score", 0),
         "human_approval_required": s.get("human_approval_required", False),
@@ -163,8 +154,6 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["phase"] = d["phase"]
     s["kill_chain_stage"] = d["kill_chain_stage"]
     s["attack_techniques"] = list(d["attack_techniques"])
-    s["diamond_graph"] = nx.node_link_graph(d["diamond_graph"], edges="edges")
-    s["iocs"] = [IOC(**i) for i in d["iocs"]]
     s["forensic_artifacts"] = [Artifact(**a) for a in d["forensic_artifacts"]]
     s["csf_subcategories_satisfied"] = set(d["csf_subcategories_satisfied"])
     s["iso27035_phase"] = d["iso27035_phase"]
@@ -173,7 +162,10 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["containment_actions"] = list(d.get("containment_actions", []))
     s["eradication_actions"] = list(d.get("eradication_actions", []))
     s["recovery_actions"] = list(d.get("recovery_actions", []))
-    s["evidence_chain"] = [HashChainEntry(**h) for h in d["evidence_chain"]]
+    s["affected_hosts"] = list(d.get("affected_hosts", []))
+    s["affected_users"] = list(d.get("affected_users", []))
+    s["affected_services"] = list(d.get("affected_services", []))
+    s["affected_data"] = list(d.get("affected_data", []))
     s["_node_history"] = list(d.get("_node_history", []))
     s["_output_dir"] = d.get("_output_dir", "")
     s["_detected_os"] = d.get("_detected_os", "unknown")
@@ -183,6 +175,7 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["_post_restore_alarms"] = d.get("_post_restore_alarms", False)
     s["_verifier_complete"] = d.get("_verifier_complete", False)
     s["_verifier_decisions"] = list(d.get("_verifier_decisions", []))
+    s["_verifier_revision_count"] = d.get("_verifier_revision_count", 0)
     s["_findings"] = list(d.get("_findings", []))
     s["_max_blast_score"] = d.get("_max_blast_score", 0)
     s["human_approval_required"] = d.get("human_approval_required", False)
