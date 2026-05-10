@@ -1,0 +1,206 @@
+{
+  "version": "0.1.0",
+  "schema": "ATT&CK technique ID -> per-platform runnable containment one-liners",
+  "last_updated": "2026-05-09",
+  "notes": "All commands are advisory. Operators MUST review before execution. Commands prefer reversible actions (block, isolate, suspend) over destructive (delete, wipe).",
+  "default_actions": {
+    "isolate_host": {
+      "description": "Cut network egress to contain spread",
+      "windows_powershell": "New-NetFirewallRule -DisplayName 'MH-Isolate-Egress' -Direction Outbound -Action Block -Enabled True; New-NetFirewallRule -DisplayName 'MH-Isolate-Ingress' -Direction Inbound -Action Block -Enabled True",
+      "linux_bash": "sudo iptables -I OUTPUT 1 -j DROP && sudo iptables -I INPUT 1 -j DROP",
+      "macos_bash": "sudo pfctl -e && echo 'block all' | sudo pfctl -f -",
+      "reversibility": "high",
+      "blast_radius_hint": "isolates one host; SSH/RDP into that host will stop working"
+    },
+    "rotate_credentials": {
+      "description": "Force password reset for impacted user",
+      "windows_powershell": "Set-ADAccountPassword -Identity '<USER>' -Reset; Set-ADUser -Identity '<USER>' -ChangePasswordAtLogon $true",
+      "linux_bash": "sudo passwd --expire <USER>",
+      "macos_bash": "sudo sysadminctl -resetPasswordFor <USER> -newPassword - -adminUser <ADMIN> -adminPassword -",
+      "reversibility": "medium",
+      "blast_radius_hint": "single user account; legitimate sessions will be disrupted"
+    },
+    "snapshot_evidence": {
+      "description": "Capture memory + disk snapshot before any host change",
+      "windows_powershell": "DumpIt.exe /OUTPUT C:\\evidence\\<HOST>-mem.raw /TYPE PHYSICALMEMORY",
+      "linux_bash": "sudo avml /evidence/<HOST>-mem.lime; sudo dd if=/dev/sda of=/evidence/<HOST>-disk.raw bs=4M status=progress",
+      "macos_bash": "sudo osxpmem -o /evidence/<HOST>-mem.aff4",
+      "reversibility": "high",
+      "blast_radius_hint": "read-only operation on the source host"
+    }
+  },
+  "techniques": {
+    "T1003.001": {
+      "name": "OS Credential Dumping: LSASS Memory",
+      "actions": [
+        {
+          "verb": "block_lsass_access",
+          "description": "Enable LSA Protection (RunAsPPL) to block userland LSASS reads",
+          "windows_powershell": "New-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name 'RunAsPPL' -Value 1 -PropertyType DWord -Force; Restart-Computer -Confirm",
+          "linux_bash": null,
+          "macos_bash": null,
+          "reversibility": "high"
+        },
+        {
+          "verb": "rotate_local_secrets",
+          "description": "Rotate all local + cached domain credentials on affected host",
+          "windows_powershell": "klist purge; ksetup /clearKbtgt; Get-LocalUser | ForEach-Object { Set-LocalUser -Name $_.Name -PasswordNeverExpires:$false }",
+          "linux_bash": null,
+          "macos_bash": null,
+          "reversibility": "medium"
+        }
+      ]
+    },
+    "T1059.001": {
+      "name": "Command and Scripting Interpreter: PowerShell",
+      "actions": [
+        {
+          "verb": "kill_pwsh_process",
+          "description": "Terminate suspicious PowerShell processes",
+          "windows_powershell": "Get-Process -Name 'powershell','pwsh' | Where-Object { $_.Id -in @(<PID_LIST>) } | Stop-Process -Force",
+          "linux_bash": "pkill -9 -f pwsh",
+          "macos_bash": "pkill -9 -f pwsh",
+          "reversibility": "high"
+        },
+        {
+          "verb": "enable_script_block_logging",
+          "description": "Turn on PowerShell ScriptBlock logging for forward visibility",
+          "windows_powershell": "New-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging' -Force; Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging' -Name 'EnableScriptBlockLogging' -Value 1",
+          "linux_bash": null,
+          "macos_bash": null,
+          "reversibility": "high"
+        }
+      ]
+    },
+    "T1059.003": {
+      "name": "Command and Scripting Interpreter: Windows Command Shell",
+      "actions": [
+        {
+          "verb": "kill_cmd_process",
+          "description": "Terminate suspicious cmd.exe processes",
+          "windows_powershell": "Get-Process -Name 'cmd' | Where-Object { $_.Id -in @(<PID_LIST>) } | Stop-Process -Force",
+          "linux_bash": null,
+          "macos_bash": null,
+          "reversibility": "high"
+        }
+      ]
+    },
+    "T1547.001": {
+      "name": "Boot or Logon Autostart Execution: Registry Run Keys",
+      "actions": [
+        {
+          "verb": "disable_run_key",
+          "description": "Remove Run/RunOnce key for suspicious entry (preserves rest)",
+          "windows_powershell": "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name '<VALUE_NAME>' -Force",
+          "linux_bash": null,
+          "macos_bash": null,
+          "reversibility": "medium"
+        }
+      ]
+    },
+    "T1543.003": {
+      "name": "Create or Modify System Process: Windows Service",
+      "actions": [
+        {
+          "verb": "stop_and_disable_service",
+          "description": "Stop the service and set start type to disabled",
+          "windows_powershell": "Stop-Service -Name '<SVC>' -Force; Set-Service -Name '<SVC>' -StartupType Disabled",
+          "linux_bash": null,
+          "macos_bash": null,
+          "reversibility": "high"
+        }
+      ]
+    },
+    "T1543.002": {
+      "name": "Create or Modify System Process: Systemd Service",
+      "actions": [
+        {
+          "verb": "stop_and_mask_unit",
+          "description": "Stop unit and mask to prevent re-activation",
+          "windows_powershell": null,
+          "linux_bash": "sudo systemctl stop <UNIT>; sudo systemctl mask <UNIT>",
+          "macos_bash": null,
+          "reversibility": "high"
+        }
+      ]
+    },
+    "T1543.001": {
+      "name": "Create or Modify System Process: Launch Agent",
+      "actions": [
+        {
+          "verb": "unload_launch_agent",
+          "description": "Unload the suspect LaunchAgent and quarantine the plist",
+          "windows_powershell": null,
+          "linux_bash": null,
+          "macos_bash": "launchctl bootout gui/$(id -u <USER>) <PATH_TO_PLIST>; sudo mv <PATH_TO_PLIST> /tmp/quarantine/",
+          "reversibility": "high"
+        }
+      ]
+    },
+    "T1053.005": {
+      "name": "Scheduled Task/Job: Scheduled Task",
+      "actions": [
+        {
+          "verb": "disable_scheduled_task",
+          "description": "Disable the suspicious scheduled task without deleting (preserves audit trail)",
+          "windows_powershell": "Disable-ScheduledTask -TaskName '<TASK_NAME>' -TaskPath '<PATH>'",
+          "linux_bash": null,
+          "macos_bash": null,
+          "reversibility": "high"
+        }
+      ]
+    },
+    "T1053.003": {
+      "name": "Scheduled Task/Job: Cron",
+      "actions": [
+        {
+          "verb": "comment_out_cron_entry",
+          "description": "Comment out the suspect crontab line (reversible) for the affected user",
+          "windows_powershell": null,
+          "linux_bash": "sudo crontab -u <USER> -l | sed 's|^<CRON_PATTERN>|# MH-DISABLED &|' | sudo crontab -u <USER> -",
+          "macos_bash": "sudo crontab -u <USER> -l | sed 's|^<CRON_PATTERN>|# MH-DISABLED &|' | sudo crontab -u <USER> -",
+          "reversibility": "high"
+        }
+      ]
+    },
+    "T1071.001": {
+      "name": "Application Layer Protocol: Web Protocols (C2)",
+      "actions": [
+        {
+          "verb": "block_c2_destination",
+          "description": "Drop traffic to the C2 IP/host at the host firewall",
+          "windows_powershell": "New-NetFirewallRule -DisplayName 'MH-Block-C2' -Direction Outbound -RemoteAddress <C2_IP> -Action Block -Enabled True",
+          "linux_bash": "sudo iptables -I OUTPUT -d <C2_IP> -j DROP",
+          "macos_bash": "echo 'block out quick to <C2_IP>' | sudo pfctl -ef -",
+          "reversibility": "high"
+        }
+      ]
+    },
+    "T1078": {
+      "name": "Valid Accounts",
+      "actions": [
+        {
+          "verb": "disable_account",
+          "description": "Disable the compromised account (reversible vs. delete)",
+          "windows_powershell": "Disable-LocalUser -Name '<USER>'; Disable-ADAccount -Identity '<USER>'",
+          "linux_bash": "sudo usermod --lock <USER>; sudo usermod --expiredate 1 <USER>",
+          "macos_bash": "sudo dscl . -create /Users/<USER> AuthenticationAuthority ';DisabledUser;'",
+          "reversibility": "high"
+        }
+      ]
+    },
+    "T1027": {
+      "name": "Obfuscated Files or Information",
+      "actions": [
+        {
+          "verb": "quarantine_artifact",
+          "description": "Move the obfuscated artifact to a quarantine path (preserves for analysis)",
+          "windows_powershell": "Move-Item -Path '<PATH>' -Destination 'C:\\Quarantine\\' -Force",
+          "linux_bash": "sudo mkdir -p /var/quarantine && sudo mv <PATH> /var/quarantine/",
+          "macos_bash": "sudo mkdir -p /var/quarantine && sudo mv <PATH> /var/quarantine/",
+          "reversibility": "high"
+        }
+      ]
+    }
+  }
+}

@@ -73,11 +73,20 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "enum": ["confirmed", "inferred", "uncertain", "unknown"],
                     },
+                    "confidence_rationale": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "One-sentence justification of the chosen confidence "
+                            "in the form 'X because Y'. Mandatory; the schema rejects "
+                            "missing/empty rationale."
+                        ),
+                    },
                     "pins": {"type": "array", "minItems": 1},
                     "mitre_attck": {"type": "array", "items": {"type": "string"}},
                     "related_findings": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["finding_id", "claim", "confidence", "pins"],
+                "required": ["finding_id", "claim", "confidence", "confidence_rationale", "pins"],
             },
         ),
         Tool(

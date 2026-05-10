@@ -365,12 +365,185 @@ cmd_serve() {
     "$MH_PY" "${MH_HOME}/scripts/serve.py" --host "$host" --port "$port"
 }
 
+# ─── scope (multi-host parallel self-collect over SSH) ─────────────────────
+
+# cmd_scope <base-case-id> --hosts host1,host2,host3 [--key=PATH] [--user=NAME]
+#
+# Fans out scripts/self-collect.sh over SSH to each named host in parallel,
+# then rsyncs the artifacts back to cases/<base>-<host>/input/. Each host
+# becomes its own case dir so subsequent `mh run` / `mh orchestrate` calls
+# pivot per host without needing extra wiring.
+#
+# `localhost` is treated as a special case — script runs in-process, no SSH.
+# Useful for smoke-testing the multi-host pipeline without a real fleet.
+cmd_scope() {
+    local base_id=""
+    local hosts_csv=""
+    local ssh_user=""
+    local ssh_key=""
+    local parallelism="4"
+    for arg in "$@"; do
+        case "$arg" in
+            --hosts=*)        hosts_csv="${arg#--hosts=}" ;;
+            --user=*)         ssh_user="${arg#--user=}" ;;
+            --key=*)          ssh_key="${arg#--key=}" ;;
+            --parallelism=*)  parallelism="${arg#--parallelism=}" ;;
+            -h|--help)
+                cat <<EOF
+Usage: mh scope <base-case-id> --hosts=host1,host2,host3 [options]
+
+  Fans out scripts/self-collect.sh over SSH to each host and rsyncs the
+  artifacts into cases/<base>-<host>/input/. Each host becomes its own
+  case directory ready for mh run / mh orchestrate.
+
+Options:
+  --hosts=CSV       Comma-separated list of hostnames (required).
+                    Use 'localhost' for in-process smoke testing.
+  --user=NAME       SSH user for all hosts (defaults to current user).
+  --key=PATH        SSH private key (passes -i to ssh).
+  --parallelism=N   Max concurrent SSH sessions (default 4).
+EOF
+                return 0
+                ;;
+            *) base_id="$arg" ;;
+        esac
+    done
+    if [[ -z "$base_id" ]] || [[ -z "$hosts_csv" ]]; then
+        fail "Usage: mh scope <base-case-id> --hosts=host1,host2,..."
+        return 2
+    fi
+
+    local self_collect="${MH_HOME}/scripts/self-collect.sh"
+    if [[ ! -x "$self_collect" ]]; then
+        fail "scripts/self-collect.sh not found or not executable at ${self_collect}"
+        return 1
+    fi
+
+    # Split CSV into array (handles 'a,b,c' and 'a, b, c' forms).
+    local IFS_BACKUP="$IFS"
+    IFS=',' read -ra hosts <<< "${hosts_csv// /}"
+    IFS="$IFS_BACKUP"
+
+    mkdir -p "$MH_CASES_DIR"
+    info "Scope: ${#hosts[@]} hosts → cases/${base_id}-<host>/input/"
+    info "Parallelism: ${parallelism}"
+
+    local ssh_opts=(
+        -o "StrictHostKeyChecking=accept-new"
+        -o "ConnectTimeout=10"
+        -o "BatchMode=yes"
+    )
+    [[ -n "$ssh_user" ]] && ssh_opts+=(-l "$ssh_user")
+    [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
+
+    # Per-host worker. Runs in a subshell so we can `wait` for many at once.
+    _scope_one_host() {
+        local host="$1"
+        local case_dir="${MH_CASES_DIR}/${base_id}-${host}"
+        local input_dir="${case_dir}/input"
+        mkdir -p "$input_dir"
+
+        local prefix="[${host}]"
+        if [[ "$host" == "localhost" ]] || [[ "$host" == "127.0.0.1" ]]; then
+            # Local path — no SSH. Smoke test mode.
+            echo "${prefix} self-collect → ${input_dir}"
+            if "$self_collect" "$input_dir" >/dev/null 2>&1; then
+                echo "${prefix} ✓ collected $(ls "$input_dir" | wc -l | tr -d ' ') artifacts"
+                return 0
+            else
+                echo "${prefix} ✗ self-collect failed"
+                return 1
+            fi
+        fi
+
+        # Remote — pipe the script over stdin so the remote host doesn't
+        # need a pre-installed copy of self-collect.sh.
+        local remote_dest="/tmp/mh-collect-${base_id}-${host}-$$"
+        echo "${prefix} ssh → ${remote_dest}"
+        if ! ssh "${ssh_opts[@]}" "$host" \
+                "mkdir -p '${remote_dest}' && bash -s -- '${remote_dest}'" \
+                < "$self_collect" >/dev/null 2>&1; then
+            echo "${prefix} ✗ remote self-collect failed (ssh/exec)"
+            return 1
+        fi
+
+        # Rsync if available (incremental + restart), else scp.
+        if command -v rsync >/dev/null 2>&1; then
+            if ! rsync -az --delete \
+                    -e "ssh ${ssh_opts[*]}" \
+                    "${host}:${remote_dest}/" "${input_dir}/" >/dev/null 2>&1; then
+                echo "${prefix} ✗ rsync back failed"
+                return 1
+            fi
+        else
+            if ! scp -r "${ssh_opts[@]}" \
+                    "${host}:${remote_dest}/." "${input_dir}/" >/dev/null 2>&1; then
+                echo "${prefix} ✗ scp back failed"
+                return 1
+            fi
+        fi
+
+        # Best-effort cleanup of remote temp dir; don't fail the host on this.
+        ssh "${ssh_opts[@]}" "$host" "rm -rf '${remote_dest}'" >/dev/null 2>&1 || true
+        echo "${prefix} ✓ collected $(ls "$input_dir" | wc -l | tr -d ' ') artifacts"
+        return 0
+    }
+
+    # Fire workers up to --parallelism. Use a counting semaphore via
+    # xargs -P: print one host per line, xargs spawns N at a time.
+    export -f _scope_one_host
+    export MH_CASES_DIR base_id self_collect
+    # ssh_opts is an array; reflatten into env via space-joined string.
+    export MH_SCOPE_SSH_OPTS="${ssh_opts[*]}"
+
+    local failures=0
+    # Print hosts one per line, run in parallel, capture exit-code rollup.
+    if ! printf "%s\n" "${hosts[@]}" \
+        | xargs -I{} -P "${parallelism}" bash -c '_scope_one_host "$@"' _ {}; then
+        failures=$?
+    fi
+
+    # Aggregate result line.
+    local landed=0
+    for h in "${hosts[@]}"; do
+        local d="${MH_CASES_DIR}/${base_id}-${h}/input"
+        if [[ -d "$d" ]] && [[ -n "$(ls -A "$d" 2>/dev/null || true)" ]]; then
+            landed=$((landed + 1))
+        fi
+    done
+
+    info "Scope complete: ${landed}/${#hosts[@]} host case dirs populated"
+    if (( landed == 0 )); then
+        fail "No host case dirs were populated — check SSH access + key"
+        return 1
+    fi
+    info "Next: ./bin/mh run ${base_id}-<host>  (or mh orchestrate ${base_id}-<host>)"
+}
+
 # ─── report (plain-English summary, no LLM, no tokens) ──────────────────────
 
 cmd_report() {
-    local case_id="${1:-}"
+    # Two modes:
+    #   mh report <case-id>          - plain-English non-technical summary
+    #   mh report --exec <case-id>   - executive incident report (one-page
+    #                                   exec view + technical appendix +
+    #                                   platform-specific containment cmds)
+    local exec_mode=0
+    local case_id=""
+    for arg in "$@"; do
+        case "$arg" in
+            --exec) exec_mode=1 ;;
+            -h|--help)
+                echo "Usage: mh report [--exec] <case-id>"
+                echo "  default       Plain-English summary for non-technical readers"
+                echo "  --exec        Executive report with next-4h actions + commands"
+                return 0
+                ;;
+            *) case_id="$arg" ;;
+        esac
+    done
     if [[ -z "$case_id" ]]; then
-        fail "Usage: mh report <case-id>"
+        fail "Usage: mh report [--exec] <case-id>"
         return 2
     fi
     local case_dir="${MH_CASES_DIR}/${case_id}"
@@ -378,6 +551,17 @@ cmd_report() {
         fail "No output dir at ${case_dir}/output — run mh run first"
         return 1
     fi
+
+    if (( exec_mode )); then
+        "$MH_PY" "${MH_HOME}/scripts/exec-report.py" "$case_dir"
+        local out="${case_dir}/output/exec-report.md"
+        echo ""
+        info "Executive incident report at ${out}"
+        echo ""
+        head -40 "$out"
+        return 0
+    fi
+
     "$MH_PY" "${MH_HOME}/scripts/plain-summary.py" "$case_dir"
     local out="${case_dir}/output/summary.md"
     echo ""
@@ -414,36 +598,63 @@ cmd_status() {
 # ─── tools ───────────────────────────────────────────────────────────────────
 
 cmd_tools() {
-    info "MCP tools exposed by protocol_sift:"
-    cat <<'EOF'
-  Audit / lifecycle:
-    hash                       — sha256 + sha1 + size
-    audit_append               — append to plain audit log
-    finding_record             — register finding (rejects un-pinned)
+    # Honour --tier=N to filter; default shows all tools grouped by tier.
+    local tier_filter=""
+    for arg in "$@"; do
+        case "$arg" in
+            --tier=*) tier_filter="${arg#--tier=}" ;;
+            -h|--help)
+                echo "Usage: mh tools [--tier=1|2|3]"
+                echo "  Lists MCP tools grouped by IR signal tier."
+                echo "  Tier 1 = high-signal, decision-driving (run these first)."
+                echo "  Tier 2 = corroboration/timeline."
+                echo "  Tier 3 = bulk / audit / routing primitives."
+                return 0
+                ;;
+        esac
+    done
 
-  Cross-OS routing:
-    os_detect                  — magic-byte + dir-marker OS classification
-    magic_check                — first-16-bytes signature probe
+    if [[ -n "$tier_filter" ]]; then
+        info "MCP tools at IR signal tier ${tier_filter}:"
+        "$MH_PY" -c "
+from protocol_sift_mcp.signal_tiers import tools_at_tier
+tier = int('${tier_filter}')
+for name in tools_at_tier(tier):
+    print(f'  {name}')
+"
+        return 0
+    fi
 
-  Windows triage:
-    win_registry_get           — read registry key (NTUSER, SOFTWARE, etc)
-    win_prefetch_parse         — parse .pf for execution proof
-    win_evtx_query             — filter EVTX by EID + time range
-    win_lnk_parse              — parse .lnk for target + drive_serial
-
-  macOS triage:
-    mac_plist_get              — live
-    mac_apfs_inspect, mac_tracev3_query,
-    mac_knowledgec_query, mac_spotlight_query   (Sub-Plan 05+ deferred)
-
-  Linux triage:
-    linux_history_parse        — live (bash + zsh formats)
-    linux_journal_query, linux_audit_query,
-    linux_systemd_units, linux_cron_parse        (Sub-Plan 05+ deferred)
-
-  Memory (cross-OS):
-    memory_volatility          — Volatility 3 plugin invocation (live, 11-plugin allowlist)
-EOF
+    info "MCP tools exposed by protocol_sift (grouped by IR signal tier):"
+    "$MH_PY" -c "
+from protocol_sift_mcp.signal_tiers import tier_summary
+labels = {
+    1: 'Tier 1 — high-signal, decision-driving (run first)',
+    2: 'Tier 2 — corroboration / recent-activity / timeline',
+    3: 'Tier 3 — bulk / audit / routing primitives',
+}
+descriptions = {
+    'memory_volatility':   'Volatility 3 plugins (pslist/psscan/netscan/malfind/svcscan/etc)',
+    'win_evtx_query':      'Windows event logs (4624/4625/4688/7045 = auth + exec + svc)',
+    'win_registry_get':    'Registry hives (Run/RunOnce/Services persistence)',
+    'win_lnk_parse':       'Windows .lnk shortcuts (target + drive_serial)',
+    'win_prefetch_parse':  'Windows .pf prefetch (execution proof)',
+    'mac_knowledgec_query':'macOS KnowledgeC (recent apps + focus)',
+    'mac_plist_get':       'macOS plist (LaunchAgents/Daemons + prefs)',
+    'linux_history_parse': 'bash + zsh history (recent commands)',
+    'hash':                'sha256 + sha1 + size',
+    'audit_append':        'append to plain audit log',
+    'finding_record':      'register finding (rejects un-pinned)',
+    'os_detect':           'magic-byte + dir-marker OS classification',
+    'magic_check':         'first-16-bytes signature probe',
+}
+for tier in (1, 2, 3):
+    print()
+    print(f'  {labels[tier]}')
+    for name in tier_summary()[tier]:
+        desc = descriptions.get(name, '')
+        print(f'    {name:<22s} — {desc}')
+"
 }
 
 # ─── check (quick env probe with exit code) ─────────────────────────────────
@@ -678,8 +889,11 @@ ${BOLD}COMMANDS${NC}
                               all on YOUR machine, no tokens.
     run <case-id>             Run Claude Code triage on cases/<id>/input/.
     orchestrate <case-id>     LangGraph state-machine triage (Sub-Plan 02+)
-    report <case-id>          Generate plain-English summary from findings
-                              (deterministic, no LLM, no tokens).
+    scope <base> --hosts=CSV  Parallel SSH self-collect across multiple hosts
+                              into cases/<base>-<host>/input/.
+    report [--exec] <case-id> Plain-English summary by default;
+                              --exec emits one-page exec view + technical
+                              appendix + per-platform containment commands.
     serve [--port=N]          Local web viewer for cases (markdown rendered,
                               audit log pretty-printed). Default port 8765.
     status                    List cases + their phase.
@@ -725,6 +939,7 @@ main() {
         self-collect) cmd_self_collect "$@" ;;
         run)          cmd_run "$@" ;;
         orchestrate)  cmd_orchestrate "$@" ;;
+        scope)        cmd_scope "$@" ;;
         report)       cmd_report "$@" ;;
         serve)        cmd_serve "$@" ;;
         status)       cmd_status "$@" ;;

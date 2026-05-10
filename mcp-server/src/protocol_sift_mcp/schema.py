@@ -45,6 +45,14 @@ class Finding(BaseModel):
     finding_id: str = Field(min_length=1)
     claim: str = Field(min_length=1)
     confidence: Confidence
+    confidence_rationale: str = Field(
+        min_length=1,
+        description=(
+            "Why this confidence level was chosen. One-sentence justification "
+            "in the form 'X because Y'. Owners trust output enough to act on "
+            "it only when the rationale is explicit."
+        ),
+    )
     pins: list[Pin] = Field(min_length=1)
     mitre_attck: list[str] = Field(default_factory=list)
     related_findings: list[str] = Field(default_factory=list)

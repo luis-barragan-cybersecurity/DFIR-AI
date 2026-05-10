@@ -10,6 +10,7 @@ Marks RS.AN-01 (Analysis: notifications + cause). Sets phase='analyze'.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,15 @@ ALLOWED_TOOLS = [
     "mcp__protocol_sift__hash",
     "mcp__protocol_sift__finding_record",
     "mcp__protocol_sift__os_detect",
+    "mcp__protocol_sift__magic_check",
+    "mcp__protocol_sift__memory_volatility",
+    "mcp__protocol_sift__linux_history_parse",
+    "mcp__protocol_sift__win_registry_get",
+    "mcp__protocol_sift__win_evtx_query",
+    "mcp__protocol_sift__win_prefetch_parse",
+    "mcp__protocol_sift__win_lnk_parse",
+    "mcp__protocol_sift__mac_plist_get",
+    "mcp__protocol_sift__audit_append",
     "Read", "Glob", "Grep",
 ]
 
@@ -99,24 +109,65 @@ def run(state: IncidentState) -> IncidentState:
             state["_rca_complete"] = True
             break
 
+        evidence_dir = case_dir / "input"
+        evidence_listing = "\n".join(
+            f"  - {p.name} ({p.stat().st_size} bytes)"
+            for p in sorted(evidence_dir.iterdir()) if p.exists()
+        ) if evidence_dir.exists() else "  (no evidence files found)"
+        prompt = (
+            f"Case: {case_dir.name}\n"
+            f"Detected OS: {state.get('_detected_os', 'unknown')}\n"
+            f"Severity: {state.get('severity', 'unknown')}\n"
+            f"Iteration: {iter_num}\n\n"
+            f"Evidence files under {evidence_dir}/:\n{evidence_listing}\n\n"
+            "Analyze the evidence for root cause and IOCs. Use the per-OS "
+            "MCP forensic tools available to you (e.g., mcp__protocol_sift__"
+            "memory_volatility for memory dumps, mcp__protocol_sift__linux_"
+            "history_parse for shell history, mcp__protocol_sift__win_* for "
+            "Windows artifacts). For memory dumps, run plugins like "
+            "linux.pslist / windows.pslist / linux.bash. Record EVERY "
+            "finding via mcp__protocol_sift__finding_record with: claim, "
+            "confidence, confidence_rationale (one sentence in the form "
+            "'X because Y' justifying the chosen confidence), and >=1 pin. "
+            "Tag MITRE ATT&CK techniques (T####) in the claim text where "
+            "relevant. Reply with one line: DONE."
+        )
         result = invoke_subagent(
             subagent_name=subagent,
-            prompt=(
-                "Analyze the case for root cause. Record findings via "
-                "mcp__protocol_sift__finding_record. Reply with one line: DONE."
-            ),
+            prompt=prompt,
             case_dir=case_dir,
             allowed_tools=ALLOWED_TOOLS,
             mcp_config_path=None,
             headless=True,
-            timeout_sec=300,
+            timeout_sec=1200,
         )
-        # Findings are recorded out-of-band via the finding_record MCP tool;
-        # this node treats result.parsed_messages as informational only and
-        # relies on the MCP tool to mutate state['_findings'] elsewhere if
-        # wired. For now, no in-band findings are extracted here, so each
-        # subagent pass ends without adding new findings → loop exits.
-        added = _merge_findings(state, [])
+        if result.exit_code != 0:
+            record_audit(
+                state, event="analyze_subagent_failed",
+                data={"subagent": subagent, "iter": iter_num,
+                      "exit_code": result.exit_code,
+                      "stderr": (result.final_text or "")[:500]},
+            )
+            raise RuntimeError(
+                f"analyze subagent {subagent!r} failed at iter {iter_num}: "
+                f"exit_code={result.exit_code}"
+            )
+        # Findings are recorded out-of-band by the subagent via the
+        # finding_record MCP tool, which writes to <output>/findings.json
+        # (mcp-server/tools/finding.py). Re-read that file each iteration
+        # to surface any new entries into state["_findings"].
+        new_findings: list[dict] = []
+        findings_path = Path(state["_output_dir"]) / "findings.json"
+        if findings_path.exists():
+            try:
+                raw = json.loads(findings_path.read_text())
+                if isinstance(raw, list):
+                    new_findings = raw
+                elif isinstance(raw, dict) and isinstance(raw.get("findings"), list):
+                    new_findings = raw["findings"]
+            except (json.JSONDecodeError, OSError):
+                new_findings = []
+        added = _merge_findings(state, new_findings)
         emit_message(
             state, from_agent=subagent, to_agent="orchestrator",
             role="response",
