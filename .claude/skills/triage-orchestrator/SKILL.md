@@ -50,6 +50,21 @@ Examples that pass:
 
 Owners read this field to decide whether to act on a finding. A bare confidence enum without justification is treated as a fabrication and rejected.
 
+## Handle-Dump Discipline — MANDATORY before claiming "memory cap"
+
+**You MUST NOT record a gap of the form "memory cannot tell us X about file Y" until you have run `windows.dumpfiles --pid <PID>` against every process whose handles point at file Y or any of its sibling logs.**
+
+Triggering processes (cloud-sync, messaging, browser, mail) keep high-value files cached in their working set. Even if the bulk of the file is paged out, OneDrive's `downloads3.txt`, Drive FS's `drive_fs.db`, Slack's `local_log_session.json`, Chrome/Edge `History`, and Outlook's `RoamCache` routinely survive in cached pages. The Rocba case (case-id `rocba-memory`, 2026-05) lost ~30 minutes of investigative time because the agent recorded `G-2: specific files exfiltrated unknowable from memory` while the OneDrive AODL handle was sitting on PID 9648 — a single `windows.dumpfiles --pid 9648` recovered `downloads3.txt` (49 SharePoint download events) and Fred's user-state `.dat` (≈30 named SRL files), collapsing the gap entirely.
+
+The high-value process registry lives at `orchestrator/src/mh_orchestrator/handle_dump_registry.py`. For any case where a registered process appears in `windows.pslist` / `windows.psscan`, you MUST:
+
+1. Run `mcp__protocol_sift__memory_volatility` with `plugin=windows.dumpfiles args=["--pid", "<PID>"]`. Output lands in the case output dir.
+2. Filter the dump output for the artifact patterns named in the registry entry (e.g. `.aodl`, `downloads3.txt`, `drive_fs.db`).
+3. Decode the recovered files (UTF-16-LE for OneDrive logs; SQLite for browser DBs; JSON for Slack).
+4. Pin every recovered claim to the dumped artifact filename.
+
+**Pre-`finding_record` gate:** when the confidence is `unknown` AND the claim mentions "memory cap" / "memory only" / "cannot from memory alone" / "irrecoverable from this image" / similar phrasing, you MUST first confirm in your reasoning that `windows.dumpfiles` was attempted on every registered process holding a relevant handle. If you can't name the dumpfiles attempt, the gap is premature — go run it.
+
 ## IR Signal Tiering — Run Tier 1 First
 
 Tools are grouped into three IR signal tiers (`mcp-server/src/protocol_sift_mcp/signal_tiers.py`). Operational IR triage spends 80% of decision value on tier-1 surface, so the TodoWrite plan must order tier-1 work first.
