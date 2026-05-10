@@ -74,50 +74,90 @@ def test_render_mermaid_emits_arrows_between_nodes() -> None:
 def test_extract_time_anchors_pulls_iso_stamps_from_claims() -> None:
     findings = [
         {
-            "finding_id": "F-005",
+            "finding_id": "F-005-browser-burst-msedge",
             "claim": (
                 "msedge.exe burst at 2020-11-14T04:12:49Z by parent PID 22700, "
                 "30 children all exiting at 2020-11-14T04:59:17Z."
             ),
         },
         {
-            "finding_id": "F-007",
+            "finding_id": "F-007-interactive-logon-marker",
             "claim": "interactive marker fires at 2020-11-14T03:42:50Z (= 22:42 EST)",
         },
     ]
     anchors = at.extract_time_anchors(findings)
-    timestamps = [a[0] for a in anchors]
+    starts = [a[0] for a in anchors]
     # Sorted ascending
-    assert timestamps == sorted(timestamps)
-    # All three stamps captured
-    assert "2020-11-14T03:42:50Z" in timestamps
-    assert "2020-11-14T04:12:49Z" in timestamps
-    assert "2020-11-14T04:59:17Z" in timestamps
+    assert starts == sorted(starts)
+    # F-005 should carry both start AND end (it had two stamps in claim)
+    f5 = next(a for a in anchors if "F-005" in a[2])
+    assert f5[0] == "2020-11-14T04:12:49Z"
+    assert f5[1] == "2020-11-14T04:59:17Z"
+    # F-007 should carry only start (single stamp)
+    f7 = next(a for a in anchors if "F-007" in a[2])
+    assert f7[0] == "2020-11-14T03:42:50Z"
+    assert f7[1] == ""
+    # Both anchors carry a section
+    assert all(a[3] for a in anchors)
 
 
 def test_extract_time_anchors_handles_no_stamps() -> None:
     anchors = at.extract_time_anchors([
-        {"finding_id": "F-X", "claim": "no timestamps in this claim"},
+        {"finding_id": "F-X-no-time", "claim": "no timestamps in this claim"},
     ])
     assert anchors == []
 
 
+def test_humanize_finding_id() -> None:
+    assert at.humanize_finding_id("F-007-interactive-logon-marker") == "Interactive logon marker"
+    # Known acronyms preserved in uppercase
+    assert at.humanize_finding_id("F-016-rdp-listener-since-boot") == "RDP listener since boot"
+    assert at.humanize_finding_id("F-005-browser-burst-msedge") == "Browser burst msedge"
+    assert at.humanize_finding_id("F-013-mrc-ir-tool-from-d-drive") == "MRC IR tool from d drive"
+    assert at.humanize_finding_id("F-012-device-picker-2358-est") == "Device picker 2358 EST"
+    # Non-conforming IDs return as-is
+    assert at.humanize_finding_id("legacy") == "legacy"
+    assert at.humanize_finding_id("") == "(unnamed)"
+
+
+def test_section_for_finding_buckets() -> None:
+    assert at.section_for_finding("F-016-rdp-listener-since-boot") == "RDP exposure"
+    assert at.section_for_finding("F-007-interactive-logon-marker") == "Intrusion"
+    assert at.section_for_finding("F-005-browser-burst-msedge") == "Intrusion"
+    assert at.section_for_finding("F-008-srl-projects-via-onedrive") == "Exfiltration surface"
+    assert at.section_for_finding("F-002-capture-time") == "Acquisition"
+    assert at.section_for_finding("F-014-gap-no-registry-plugins") == "Gaps"
+    assert at.section_for_finding("F-999-unknown-thing") == "Other"
+
+
 def test_render_gantt_includes_required_headers() -> None:
     anchors = [
-        ("2020-11-14T03:42:50Z", "interactive session", "F-007"),
-        ("2020-11-14T04:12:49Z", "msedge burst", "F-005"),
+        ("2020-11-14T03:42:50Z", "", "F-007-interactive-logon-marker", "Intrusion"),
+        ("2020-11-14T04:12:49Z", "", "F-005-browser-burst-msedge", "Intrusion"),
     ]
     out = at.render_gantt(anchors, title="Test Timeline")
     assert "```mermaid" in out
     assert "gantt" in out
     assert "title Test Timeline" in out
     assert "dateFormat YYYY-MM-DDTHH:mm:ssZ" in out
-    assert "section Events" in out
-    # Both anchors rendered
-    assert "F-007" in out
-    assert "F-005" in out
-    assert "2020-11-14T03:42:50Z" in out
-    assert "2020-11-14T04:12:49Z" in out
+    assert "section Intrusion" in out
+    # Humanized labels rendered, not surrounding-text fragments
+    assert "Interactive logon marker" in out
+    assert "Browser burst msedge" in out
+
+
+def test_render_gantt_uses_end_when_present() -> None:
+    """A finding with start AND end timestamps should render as a duration
+    bar (start, end), not a 1-minute task."""
+    anchors = [
+        ("2020-11-14T04:12:49Z", "2020-11-14T04:59:17Z",
+         "F-005-browser-burst-msedge", "Intrusion"),
+    ]
+    out = at.render_gantt(anchors)
+    line = next(l for l in out.splitlines() if "F-005" in l)
+    assert "2020-11-14T04:12:49Z" in line
+    assert "2020-11-14T04:59:17Z" in line
+    assert "1m" not in line  # not the 1-minute fallback
 
 
 def test_render_gantt_empty_anchors_renders_placeholder() -> None:
@@ -126,16 +166,33 @@ def test_render_gantt_empty_anchors_renders_placeholder() -> None:
     assert "No timestamped events found" in out
 
 
+def test_render_gantt_groups_by_section() -> None:
+    """Anchors from different sections should appear under their own
+    `section <Name>` header, in stable phase order."""
+    anchors = [
+        ("2020-11-14T04:00:00Z", "", "F-005-browser-burst-msedge", "Intrusion"),
+        ("2020-11-11T08:00:00Z", "", "F-016-rdp-listener-since-boot", "RDP exposure"),
+        ("2020-11-16T02:36:00Z", "", "F-002-capture-time", "Acquisition"),
+    ]
+    out = at.render_gantt(anchors)
+    rdp_idx = out.index("section RDP exposure")
+    intr_idx = out.index("section Intrusion")
+    acq_idx = out.index("section Acquisition")
+    # Phase order is Pre-incident → RDP exposure → Intrusion → Exfil → Acquisition
+    assert rdp_idx < intr_idx < acq_idx
+
+
 def test_render_gantt_escapes_colons_in_labels() -> None:
     """Mermaid uses `:` as a syntax separator; colons in labels must be
-    rewritten or the gantt parser breaks.
+    rewritten or the gantt parser breaks. With humanized finding IDs we
+    won't naturally see colons, but defend in depth.
     """
-    anchors = [("2020-11-14T03:42:50Z", "src:port 192.168.1.5:3389", "F-X")]
+    # Force a finding_id whose humanized form contains a colon.
+    anchors = [
+        ("2020-11-14T03:42:50Z", "", "F-100-time:warp", "Other"),
+    ]
     out = at.render_gantt(anchors)
-    # The label colons should not appear before the section's task syntax.
-    label_line = next(l for l in out.splitlines() if "F-X" in l)
-    # First `:` in the line is the gantt task separator; before that there
-    # should be no raw colon from the label.
+    label_line = next(l for l in out.splitlines() if "F-100" in l)
     pre_sep = label_line.split(":", 1)[0]
     assert ":" not in pre_sep
 
