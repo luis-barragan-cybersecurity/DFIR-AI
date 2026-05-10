@@ -1,0 +1,112 @@
+# Build and push the MemoryHound runtime image to GHCR on sub-plan completion
+# tags (e.g. `sub-plan-05-complete`). Manual `workflow_dispatch` runs build a
+# locally-loaded image and run `mh doctor` as a smoke test without pushing,
+# unless an input `tag` is provided.
+#
+# Auth: GITHUB_TOKEN only — no extra registry credentials per SP05 design.
+# Platforms: linux/amd64 only for SP05 (arm64 deferred; see Risks table).
+name: Build and push Docker image
+
+on:
+  push:
+    tags:
+      - 'sub-plan-*-complete'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Manual tag to push (e.g., dev). Leave empty to skip push.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/memoryhound
+
+jobs:
+  build-push:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tag policy:
+      #   • Tag pushes (sub-plan-*-complete) -> the literal git tag, plus
+      #     `:latest` so consumers can `docker pull ghcr.io/.../memoryhound`
+      #     without pinning a sub-plan.
+      #   • workflow_dispatch with input.tag -> that input as a single tag.
+      #   • workflow_dispatch with empty input -> no tags emitted (push step
+      #     becomes a no-op via the `tags` guard below).
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/sub-plan-') && endsWith(github.ref, '-complete') }}
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
+
+      # Smoke build: load the image into the local Docker daemon (no push) so
+      # the next step can `docker run` it. We must build before pushing — a
+      # broken `mh doctor` should fail the workflow, not ship to GHCR.
+      - name: Build image (load for smoke test, no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: memoryhound:smoke
+          build-args: |
+            MH_VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test — mh doctor
+        run: docker run --rm memoryhound:smoke doctor
+
+      # Push step: only fires when metadata-action emitted at least one tag.
+      # On workflow_dispatch with an empty `tag` input, `steps.meta.outputs.tags`
+      # is empty and we skip — useful for "build & smoke only" manual runs.
+      - name: Build and push (multi-tag)
+        if: steps.meta.outputs.tags != ''
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            MH_VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Push summary
+        if: steps.meta.outputs.tags != ''
+        run: |
+          echo "Pushed tags:"
+          echo "${{ steps.meta.outputs.tags }}"
+
+      - name: Skipped push (no tags resolved)
+        if: steps.meta.outputs.tags == ''
+        run: echo "No tags resolved; smoke test ran but nothing was pushed."

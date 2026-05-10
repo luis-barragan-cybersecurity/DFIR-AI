@@ -7,14 +7,15 @@ primitives are real on day one because they gate everything else.
 
 from __future__ import annotations
 
+import json
 import os
-from datetime import UTC, datetime
 from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from .tools import audit as au
 from .tools import evidence as ev
 from .tools import finding as fd
 from .tools import macos as mac
@@ -22,7 +23,7 @@ from .tools import parse as ps
 from .tools import windows as win
 
 OUTPUT_PATH = Path(os.environ.get("OUTPUT_PATH", "/output"))
-CHAIN_PATH = OUTPUT_PATH / "chain-of-custody.jsonl"
+AUDIT_PATH = OUTPUT_PATH / "audit.jsonl"
 FINDINGS_PATH = OUTPUT_PATH / "findings.json"
 
 server: Server = Server("protocol-sift")
@@ -41,8 +42,12 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="chain_append",
-            description="Append a chain-of-custody entry. Use sparingly; most events are auto-logged by hooks.",
+            name="audit_append",
+            description=(
+                "Append a tool-call or lifecycle event to the plain audit log. "
+                "Use when an event needs durable record. Most events are auto-logged "
+                "by the PostToolUse hook."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -53,25 +58,12 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="chain_verify",
-            description="Recompute every chain hash. Returns {ok, problems}.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="chain_acknowledge_gap",
-            description="Record an explicit 'I don't know' with scope + reason. Counts positively in accuracy report.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "scope": {"type": "string"},
-                    "reason": {"type": "string"},
-                },
-                "required": ["scope", "reason"],
-            },
-        ),
-        Tool(
             name="finding_record",
-            description="Register a finding. REJECTS if pins[] is empty — use chain_acknowledge_gap instead.",
+            description=(
+                "REJECTS if pins[] is empty — record gaps as a separate finding with "
+                "confidence='unknown', at least one pin pointing at the artifact you "
+                "could not conclude on, and a claim describing the gap."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -181,7 +173,7 @@ async def list_tools() -> list[Tool]:
                 "{os: windows|macos|linux|memory_dump|unknown, confidence: 0-1, "
                 "evidence_class, signals[], is_directory, size}. Use first on every "
                 "ingested artifact to route to the correct OS specialist subagent. "
-                "Confidence < 0.6 should trigger a chain_acknowledge_gap or a second-signal lookup."
+                "Confidence < 0.6 should trigger a second-signal lookup or a finding marked confidence='uncertain'."
             ),
             inputSchema={
                 "type": "object",
@@ -241,6 +233,58 @@ async def list_tools() -> list[Tool]:
                 "required": ["db_path"],
             },
         ),
+        Tool(
+            name="memory_volatility",
+            description=(
+                "Wrap Volatility 3 CLI to parse a memory dump. Plugin must be in "
+                "the allowlist (windows.* / linux.* / mac.* — see ALLOWED_PLUGINS). "
+                "Image path sandbox-asserted under /input. Returns parsed JSON list."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "image_path": {
+                        "type": "string",
+                        "description": "Path to memory image (under /input)",
+                    },
+                    "plugin": {
+                        "type": "string",
+                        "description": "Volatility 3 plugin name (e.g., windows.pslist)",
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Additional CLI args passed to vol",
+                        "default": [],
+                    },
+                    "timeout_sec": {
+                        "type": "integer",
+                        "default": 300,
+                        "minimum": 1,
+                        "maximum": 1800,
+                    },
+                },
+                "required": ["image_path", "plugin"],
+            },
+        ),
+        Tool(
+            name="linux_history_parse",
+            description=(
+                "Parse bash/zsh shell history file. Auto-detects format "
+                "(plain bash, bash with HISTTIMEFORMAT, or zsh extended). "
+                "Returns list of {line_num, ts, command, raw_excerpt} entries."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "history_path": {
+                        "type": "string",
+                        "description": "Path to .bash_history / .zsh_history (under /input)",
+                    },
+                },
+                "required": ["history_path"],
+            },
+        ),
     ]
 
 
@@ -249,36 +293,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "hash":
         digest = ev.hash_file(Path(arguments["path"]))
         return [TextContent(type="text", text=str(digest))]
-    if name == "chain_append":
-        entry = ev.chain_append(
-            CHAIN_PATH,
+    if name == "audit_append":
+        entry = au.audit_append(
+            AUDIT_PATH,
             event=arguments["event"],
             data=arguments["data"],
         )
         return [TextContent(type="text", text=str(entry))]
-    if name == "chain_verify":
-        ok, problems = ev.chain_verify(CHAIN_PATH)
-        return [
-            TextContent(
-                type="text",
-                text=f"ok={ok} problems={problems}",
-            )
-        ]
-    if name == "chain_acknowledge_gap":
-        entry = ev.chain_append(
-            CHAIN_PATH,
-            event="gap_acknowledged",
-            data={
-                "scope": arguments["scope"],
-                "reason": arguments["reason"],
-                "ts": datetime.now(UTC).isoformat(),
-            },
-        )
-        return [TextContent(type="text", text=str(entry))]
     if name == "finding_record":
         record = fd.finding_record(FINDINGS_PATH, arguments)
-        ev.chain_append(
-            CHAIN_PATH,
+        au.audit_append(
+            AUDIT_PATH,
             event="finding_recorded",
             data={"finding_id": record["finding_id"]},
         )
@@ -329,6 +354,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             limit=arguments.get("limit", 100),
         )
         return [TextContent(type="text", text=str(result))]
+    if name == "memory_volatility":
+        from .tools.memory import memory_volatility
+
+        mem_result = memory_volatility(
+            arguments["image_path"],
+            arguments["plugin"],
+            args=arguments.get("args"),
+            timeout_sec=arguments.get("timeout_sec", 300),
+        )
+        return [TextContent(type="text", text=json.dumps(mem_result, default=str))]
+    if name == "linux_history_parse":
+        from .tools.linux import linux_history_parse
+
+        hist_result = linux_history_parse(arguments["history_path"])
+        return [TextContent(type="text", text=json.dumps(hist_result, default=str))]
     raise ValueError(f"Unknown tool: {name}")
 
 

@@ -1,0 +1,78 @@
+# MemoryHound Docker build context exclusions.
+#
+# Keeps the build context lean and prevents host-only artifacts (venv, caches,
+# evidence, secrets) from leaking into image layers.
+
+# VCS — never needed in image
+.git/
+.github/
+
+# Python build/runtime debris
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local virtualenvs (host venv ≠ container venv)
+.venv/
+venv/
+env/
+
+# Node — npm installs claude CLI globally inside the image
+node_modules/
+
+# IDE/OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Secrets — never bake credentials
+.env
+.env.local
+*.pem
+*.key
+keys/*.priv
+keys/*.pub
+secrets/
+
+# Evidence — never bake case data into the image
+corpus/**/*.dmp
+corpus/**/*.vmem
+corpus/**/*.img
+corpus/**/*.E01
+corpus/**/*.aff
+corpus/**/*.lime
+corpus/**/*.raw
+corpus/**/*.mem
+cases/*/input/
+cases/*/output/
+
+# Run artifacts
+agent.log.jsonl
+findings.json
+narrative.md
+accuracy-report.md
+chain-of-custody.jsonl
+*.attestation.json
+
+# Worktrees, plans, memory, docs — not needed at runtime
+.claude/worktrees/
+MEMORY/
+Plans/
+docs/
+
+# Misc
+*.log
+.cache/

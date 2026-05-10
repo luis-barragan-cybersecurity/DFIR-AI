@@ -2,10 +2,9 @@
 # MemoryHound CLI — install, run, verify autonomous DFIR triage cases.
 #
 # Subcommands:
-#   mh doctor              health check — Python, Claude Code, deps, keys, perms
-#   mh init                first-time setup — venv, deps, signing keys
+#   mh doctor              health check — Python, Claude Code, deps, perms
+#   mh init                first-time setup — venv, deps
 #   mh run    <case-id>    run Claude Code triage on cases/<case-id>/input/
-#   mh verify <case-id>    verify chain + signature for a completed case
 #   mh status              recent cases + their phase
 #   mh tools               list MCP tools the agent can call
 #   mh check               quick env probe (subset of doctor, exit code)
@@ -16,7 +15,6 @@ set -euo pipefail
 MH_HOME="${MH_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 MH_VENV="${MH_VENV:-${MH_HOME}/.venv}"
 MH_PY="${MH_VENV}/bin/python"
-MH_KEYS_DIR="${MH_HOME}/keys"
 MH_CASES_DIR="${MH_HOME}/cases"
 
 GREEN=$'\e[0;32m'
@@ -37,7 +35,7 @@ info()   { echo -e "${BOLD}»${NC} $*"; }
 # consume the prompt as another tool name if passed positionally.
 claude_run() {
     local prompt="$1"
-    local allowed="mcp__protocol_sift__hash,mcp__protocol_sift__chain_append,mcp__protocol_sift__chain_verify,mcp__protocol_sift__chain_acknowledge_gap,mcp__protocol_sift__finding_record,mcp__protocol_sift__os_detect,mcp__protocol_sift__magic_check,mcp__protocol_sift__win_registry_get,mcp__protocol_sift__win_prefetch_parse,mcp__protocol_sift__win_evtx_query,mcp__protocol_sift__win_lnk_parse,mcp__protocol_sift__mac_plist_get,mcp__protocol_sift__mac_knowledgec_query,Read,Glob,Grep,TodoWrite"
+    local allowed="mcp__protocol_sift__hash,mcp__protocol_sift__audit_append,mcp__protocol_sift__finding_record,mcp__protocol_sift__os_detect,mcp__protocol_sift__magic_check,mcp__protocol_sift__win_registry_get,mcp__protocol_sift__win_prefetch_parse,mcp__protocol_sift__win_evtx_query,mcp__protocol_sift__win_lnk_parse,mcp__protocol_sift__mac_plist_get,mcp__protocol_sift__mac_knowledgec_query,mcp__protocol_sift__memory_volatility,Read,Write,Glob,Grep,TodoWrite"
 
     # Write resolved mcp-config at runtime — claude doesn't substitute
     # ${CLAUDE_PROJECT_DIR} in --mcp-config files.
@@ -60,7 +58,10 @@ claude_run() {
 }
 EOF
     export CLAUDE_PROJECT_DIR="$MH_HOME"
-    trap 'rm -f "$mcp_cfg"' RETURN
+    # Substitute $mcp_cfg now (at trap-set time) so the trap body is
+    # self-contained at RETURN — `local mcp_cfg` is out of scope by then,
+    # and `set -u` would error on a bare $mcp_cfg lookup.
+    trap "rm -f '$mcp_cfg'" RETURN
 
     if [[ "${MH_CLAUDE_HEADLESS:-0}" == "1" ]]; then
         # Headless: -p print mode for CI/scripts. Silent. Use MH_CLAUDE_HEADLESS=1.
@@ -108,11 +109,6 @@ cmd_doctor() {
         else
             warn "protocol_sift_mcp not installed — run: mh init"
         fi
-        if "$MH_PY" -c "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey" 2>/dev/null; then
-            ok "cryptography (signing) ready"
-        else
-            warn "cryptography missing — run: mh init"
-        fi
         if "$MH_PY" -c "import Registry, Evtx, pylnk3, windowsprefetch" 2>/dev/null; then
             ok "Windows forensic libs ready (Registry, Evtx, pylnk3, windowsprefetch)"
         else
@@ -137,17 +133,6 @@ cmd_doctor() {
         warn "    EITHER  export ANTHROPIC_API_KEY=sk-ant-...   OR   claude /login"
     fi
 
-    if [[ -f "${MH_KEYS_DIR}/ed25519.priv" ]]; then
-        ok "Signing keypair exists at ${MH_KEYS_DIR}/"
-        if [[ "$(stat -f '%p' "${MH_KEYS_DIR}/ed25519.priv" 2>/dev/null || stat -c '%a' "${MH_KEYS_DIR}/ed25519.priv" 2>/dev/null)" =~ 600$ ]]; then
-            ok "    private key permissions are 0600"
-        else
-            warn "    private key NOT 0600 — run: chmod 600 ${MH_KEYS_DIR}/ed25519.priv"
-        fi
-    else
-        warn "No signing keypair — run: mh init"
-    fi
-
     if [[ -f "${MH_HOME}/.claude/settings.json" ]]; then
         ok ".claude/settings.json present (Claude Code will pick up MCP + hooks here)"
     else
@@ -159,6 +144,27 @@ cmd_doctor() {
         ok "MCP server launcher executable"
     else
         warn "bin/mh-mcp-server not executable — run: chmod +x bin/mh-mcp-server"
+    fi
+
+    if [[ -x "${MH_VENV}/bin/mh-orchestrate" ]]; then
+        ok "mh-orchestrate installed"
+    else
+        warn "mh-orchestrate missing — run: mh init"
+    fi
+
+    # ISF symbol cache check (warn-only — absence does not fail doctor)
+    local isf_path="${MH_HOME}/corpus/dfrws-2008-memory/symbols/linux/2.6.18-8.1.15.el5_64.json.xz"
+    if [[ -f "$isf_path" ]]; then
+        ok "ISF symbol cache — $(wc -c <"$isf_path" 2>/dev/null | tr -d ' ' || echo '?') bytes vendored"
+    else
+        warn "ISF symbols missing at $isf_path — Volatility linux.* plugins will return empty (run: scripts/fetch-isf-symbols.sh)"
+    fi
+
+    # Docker presence check (info-only — Docker is optional)
+    if command -v docker >/dev/null 2>&1; then
+        info "Docker — $(docker --version 2>&1 | head -1) (optional; host install does not require it)"
+    else
+        info "Docker — not on PATH (optional; install for the containerized deployment path — see docs/deployment.md)"
     fi
 
     echo ""
@@ -206,19 +212,12 @@ cmd_init() {
     "$MH_PY" -m pip install --quiet --upgrade pip
     "$MH_PY" -m pip install --quiet -e "${MH_HOME}/mcp-server[dev]"
 
+    info "Installing orchestrator package (editable)…"
+    "$MH_PY" -m pip install --quiet -e "${MH_HOME}/orchestrator"
+
     if [[ $with_forensics -eq 1 ]]; then
         info "Installing forensics extras (heavy: volatility3, python-evtx, etc)"
         "$MH_PY" -m pip install --quiet -e "${MH_HOME}/mcp-server[dev,forensics]"
-    fi
-
-    if [[ ! -f "${MH_KEYS_DIR}/ed25519.priv" ]]; then
-        info "Generating ed25519 signing keypair"
-        mkdir -p "$MH_KEYS_DIR"
-        "$MH_PY" -m protocol_sift_mcp.tools.evidence keygen --out-dir "$MH_KEYS_DIR"
-        chmod 600 "${MH_KEYS_DIR}/ed25519.priv"
-        ok "Keypair at ${MH_KEYS_DIR}/"
-    else
-        ok "Keypair already exists at ${MH_KEYS_DIR}/"
     fi
 
     chmod +x "${MH_HOME}"/bin/mh "${MH_HOME}"/bin/mh-mcp-server "${MH_HOME}"/.claude/hooks/*.sh 2>/dev/null || true
@@ -262,6 +261,13 @@ cmd_run() {
         return 2
     fi
 
+    # Fresh cycle: every investigation starts with a clean output dir so
+    # findings.json / narrative.md / audit.jsonl never carry state from a
+    # prior run.
+    if [[ -d "$output_dir" ]] && [[ -n "$(ls -A "$output_dir" 2>/dev/null)" ]]; then
+        info "Resetting prior output for fresh cycle"
+    fi
+    rm -rf "$output_dir"
     mkdir -p "$output_dir"
 
     if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ ! -d "$HOME/.claude" ]]; then
@@ -291,6 +297,43 @@ cmd_run() {
     info "Launching Claude Code with triage-orchestrator skill"
     cd "$MH_HOME"
     claude_run "Use the triage-orchestrator skill to autonomously triage every artifact under ${input_dir}. Route to the correct OS specialist. Pin every finding. Acknowledge gaps explicitly. Stop when triage is complete. Write findings.json, narrative.md, and accuracy-report.md to ${output_dir}."
+}
+
+# ─── orchestrate (LangGraph state-machine driven) ──────────────────────────
+
+cmd_orchestrate() {
+    local case_id="${1:-}"
+    if [[ -z "$case_id" ]]; then
+        fail "Usage: mh orchestrate <case-id> [--recursion-limit N]"
+        return 2
+    fi
+    shift
+
+    if [[ ! -x "${MH_VENV}/bin/mh-orchestrate" ]]; then
+        fail "mh-orchestrate not installed. Run: mh init"
+        return 1
+    fi
+
+    local case_dir="${MH_CASES_DIR}/${case_id}"
+    local input_dir="${case_dir}/input"
+    local output_dir="${case_dir}/output"
+    if [[ ! -d "$input_dir" ]] || [[ -z "$(ls -A "$input_dir" 2>/dev/null)" ]]; then
+        fail "No evidence at ${input_dir}"
+        return 2
+    fi
+
+    # Fresh cycle: same contract as `mh run` — every investigation starts
+    # with a clean output dir so LangGraph state.json / audit.jsonl /
+    # findings.json never carry over from a prior cycle.
+    if [[ -d "$output_dir" ]] && [[ -n "$(ls -A "$output_dir" 2>/dev/null)" ]]; then
+        info "Resetting prior output for fresh cycle"
+    fi
+    rm -rf "$output_dir"
+    mkdir -p "$output_dir"
+
+    info "Orchestrating case ${case_id} via LangGraph"
+    export MH_HOME EVIDENCE_PATH="$input_dir" CASE_ID="$case_id"
+    "${MH_VENV}/bin/mh-orchestrate" run "$case_id" --cases-dir "$MH_CASES_DIR" "$@"
 }
 
 # ─── serve (local web viewer) ────────────────────────────────────────────────
@@ -343,47 +386,6 @@ cmd_report() {
     head -40 "$out"
 }
 
-# ─── verify ──────────────────────────────────────────────────────────────────
-
-cmd_verify() {
-    local case_id="${1:-}"
-    if [[ -z "$case_id" ]]; then
-        fail "Usage: mh verify <case-id>"
-        return 2
-    fi
-
-    local output_dir="${MH_CASES_DIR}/${case_id}/output"
-    local chain="${output_dir}/chain-of-custody.jsonl"
-    local findings="${output_dir}/findings.json"
-    local attestation="${output_dir}/case-${case_id}.attestation.json"
-
-    if [[ ! -f "$chain" ]]; then
-        fail "No chain log at ${chain}"
-        return 1
-    fi
-
-    info "Verifying chain of custody"
-    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain"; then
-        ok "Chain valid"
-    else
-        fail "Chain INVALID — tampering detected"
-        return 1
-    fi
-
-    if [[ -f "$findings" ]]; then
-        local count
-        count=$("$MH_PY" -c "import json; print(len(json.load(open('$findings'))))")
-        ok "${count} finding(s) recorded"
-    fi
-
-    if [[ -f "$attestation" ]]; then
-        ok "Signed attestation present at ${attestation}"
-        info "Verify signature with: mh-verify-attestation ${attestation} keys/ed25519.pub"
-    else
-        warn "No attestation file (case may not have completed)"
-    fi
-}
-
 # ─── status ──────────────────────────────────────────────────────────────────
 
 cmd_status() {
@@ -398,11 +400,9 @@ cmd_status() {
         local id
         id=$(basename "$case_dir")
         local phase="empty"
-        if [[ -f "${case_dir}/output/case-${id}.attestation.json" ]]; then
-            phase="${GREEN}signed${NC}"
-        elif [[ -f "${case_dir}/output/findings.json" ]]; then
-            phase="${YELLOW}finished (unsigned)${NC}"
-        elif [[ -f "${case_dir}/output/chain-of-custody.jsonl" ]]; then
+        if [[ -f "${case_dir}/output/findings.json" ]]; then
+            phase="${GREEN}finished${NC}"
+        elif [[ -f "${case_dir}/output/audit.jsonl" ]]; then
             phase="${YELLOW}in-progress${NC}"
         elif [[ -d "${case_dir}/input" ]] && [[ -n "$(ls -A "${case_dir}/input" 2>/dev/null)" ]]; then
             phase="staged"
@@ -416,11 +416,9 @@ cmd_status() {
 cmd_tools() {
     info "MCP tools exposed by protocol_sift:"
     cat <<'EOF'
-  Trust stack:
+  Audit / lifecycle:
     hash                       — sha256 + sha1 + size
-    chain_append               — append to hash-chained audit log
-    chain_verify               — recompute chain, detect tampering
-    chain_acknowledge_gap      — explicit "I don't know" entry
+    audit_append               — append to plain audit log
     finding_record             — register finding (rejects un-pinned)
 
   Cross-OS routing:
@@ -433,16 +431,18 @@ cmd_tools() {
     win_evtx_query             — filter EVTX by EID + time range
     win_lnk_parse              — parse .lnk for target + drive_serial
 
-  macOS triage (W3 stub):
-    mac_apfs_inspect, mac_plist_get, mac_tracev3_query,
-    mac_knowledgec_query, mac_spotlight_query
+  macOS triage:
+    mac_plist_get              — live
+    mac_apfs_inspect, mac_tracev3_query,
+    mac_knowledgec_query, mac_spotlight_query   (Sub-Plan 05+ deferred)
 
-  Linux triage (W4 stub):
-    linux_journal_query, linux_audit_query, linux_history_parse,
-    linux_systemd_units, linux_cron_parse
+  Linux triage:
+    linux_history_parse        — live (bash + zsh formats)
+    linux_journal_query, linux_audit_query,
+    linux_systemd_units, linux_cron_parse        (Sub-Plan 05+ deferred)
 
-  Memory (W2-W4 stub):
-    memory_volatility          — Volatility 3 plugin invocation
+  Memory (cross-OS):
+    memory_volatility          — Volatility 3 plugin invocation (live, 11-plugin allowlist)
 EOF
 }
 
@@ -469,22 +469,40 @@ cmd_self_collect() {
 
 cmd_demo() {
     local autonomous=0
-    for arg in "$@"; do
-        case "$arg" in
-            --autonomous|--auto|--automous|--autonomus) autonomous=1 ;;
-            -h|--help) echo "Usage: mh demo [--autonomous]"; return 0 ;;
-            --*) warn "Unknown flag: $arg (did you mean --autonomous?)"; return 2 ;;
+    local real_claude=0
+    while (( $# > 0 )); do
+        case "$1" in
+            --autonomous|--auto) autonomous=1; shift ;;
+            --real-claude)       real_claude=1; shift ;;
+            -h|--help)
+                echo "Usage: mh demo [--autonomous] [--real-claude]"
+                echo ""
+                echo "  (default)        Self-collect + parse + audit log; no tokens."
+                echo "  --autonomous     Reserved for Sub-Plan 02+ Claude Code chained run."
+                echo "  --real-claude    Self-collect + run mh-orchestrate with real Claude"
+                echo "                   on the triage subagent only (token-bounded smoke test)."
+                echo "                   Honors MH_DEMO_NONINTERACTIVE=1 to skip the y/N prompt."
+                return 0
+                ;;
+            *) fail "Unknown flag: $1"; echo "Run: mh demo --help" >&2; return 2 ;;
         esac
     done
 
-    if [[ $autonomous -eq 1 ]]; then
-        info "MemoryHound autonomous demo — self-collect + Claude Code triage."
-        info "Costs tokens. Needs claude /login OR ANTHROPIC_API_KEY."
-    else
-        info "MemoryHound real-data demo — collects safe artifacts from THIS host,"
-        info "runs them through MemoryHound's tools, proves chain tamper-detection."
-        info "No network, no Claude tokens. All read-only on host."
+    if (( real_claude )); then
+        _demo_real_claude
+        return $?
     fi
+
+    _demo_stub "$autonomous"
+}
+
+# ─── demo: stub-mode (default, no Claude) ───────────────────────────────────
+# Self-collects safe artifacts, ingests + classifies them, writes audit log.
+# No tokens, no LLM. Safe to run on CI / dev hosts.
+_demo_stub() {
+    local autonomous="${1:-0}"
+
+    info "MemoryHound demo — collects safe artifacts from THIS host, parses them, writes audit log."
     echo ""
 
     local demo_dir="${MH_CASES_DIR}/_demo"
@@ -494,191 +512,151 @@ cmd_demo() {
     info "Step 1: self-collect host artifacts"
     "${MH_HOME}/scripts/self-collect.sh" "${demo_dir}/input" 2>&1 | sed 's/^/    /'
 
-    local chain="${demo_dir}/output/chain-of-custody.jsonl"
+    local audit_log="${demo_dir}/output/audit.jsonl"
     export EVIDENCE_PATH="${demo_dir}/input"
     export OUTPUT_PATH="${demo_dir}/output"
 
-    echo ""
-    info "Step 2: chain_init — write genesis entry to chain-of-custody.jsonl"
-    "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_init \
-        --output "$chain" \
-        --case-id "demo" \
-        --evidence-path "${demo_dir}/input" \
-        --agent-version "memoryhound@0.1.0" \
-        --model "claude-opus-4-7" >/dev/null
-    ok "    chain initialized"
-
-    echo ""
-    info "Step 3: ingest each real artifact (compute sha256 + sha1 of actual bytes)"
+    info "Step 2: ingest each artifact (compute sha256+sha1, append to audit log)"
     local ingested=0
     while IFS= read -r f; do
-        "$MH_PY" -m protocol_sift_mcp.tools.evidence ingest --chain "$chain" --artifact "$f" >/dev/null
+        PYTHONPATH="${MH_HOME}/mcp-server/src" "$MH_PY" -m protocol_sift_mcp.tools.evidence ingest \
+            --audit "$audit_log" --artifact "$f" >/dev/null
         ingested=$((ingested + 1))
     done < <(find "${demo_dir}/input" -type f)
     ok "    $ingested artifacts ingested"
 
-    echo ""
-    info "Step 4: classify each artifact with os_detect + run matching parser"
-    local findings=0
+    info "Step 3: classify each artifact with os_detect + parse"
+    local classified=0
     while IFS= read -r f; do
         local rel="${f#${demo_dir}/input/}"
-        local classification
-        classification=$(PYTHONPATH="${MH_HOME}/mcp-server/src" "$MH_PY" -c "
-from protocol_sift_mcp.tools import parse, macos
-import json, sys
+        PYTHONPATH="${MH_HOME}/mcp-server/src" "$MH_PY" -c "
+from protocol_sift_mcp.tools import parse, macos, audit
+from pathlib import Path
+import json
 path = '$f'
 det = parse.os_detect(path)
-out = {'rel': '$rel', 'os': det['os'], 'class': det['evidence_class'], 'conf': det['confidence']}
+result = {'rel': '$rel', 'os': det['os'], 'class': det['evidence_class'], 'conf': det['confidence']}
 if det['evidence_class'] == 'plist':
     try:
         r = macos.mac_plist_get(path)
-        out['format'] = r['format']
-        out['root_keys_count'] = len(r['root_keys'])
-        out['top3_keys'] = r['root_keys'][:3]
+        result['format'] = r['format']
+        result['root_keys_count'] = len(r['root_keys'])
     except Exception as e:
-        out['parse_error'] = str(e)[:80]
-print(json.dumps(out))
-" 2>&1) || classification="{}"
-        echo "    [$rel]"
-        echo "        $classification" | sed 's/^/        /'
-
-        "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_append \
-            --chain "$chain" \
-            --event "tool_call" \
-            --data "{\"tool\":\"os_detect+parse\",\"artifact\":\"$rel\",\"result\":$classification}" >/dev/null
-        findings=$((findings + 1))
+        result['parse_error'] = str(e)[:80]
+audit.audit_append(Path('$audit_log'), event='tool_call', data={'tool': 'os_detect+parse', 'artifact': '$rel', 'result': result})
+print(json.dumps(result))
+" 2>&1 | sed 's/^/    /'
+        classified=$((classified + 1))
     done < <(find "${demo_dir}/input" -type f)
-    ok "    $findings classifications recorded to chain"
+    ok "    $classified artifacts classified, all logged to $audit_log"
 
     echo ""
-    info "Step 5: verify chain integrity"
-    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain" >/dev/null; then
-        ok "    ✓ chain valid"
+    ok "Demo complete."
+    info "Audit log: $audit_log ($(wc -l <"$audit_log") entries)"
+
+    if [[ "$autonomous" == "1" ]]; then
+        echo ""
+        info "Autonomous phase requires LangGraph orchestrator (Sub-Plan 02). Skipping for now."
+    fi
+}
+
+# ─── demo: --real-claude mode (token-bounded live smoke) ────────────────────
+# Exercises the per-node opt-in introduced by Sub-Plan 04 / T8:
+#   MH_NO_CLAUDE=1 + MH_REAL_CLAUDE_NODES=triage
+# Only the triage subagent talks to real Claude; analyze + verifier_pass stay
+# stubbed. Estimated cost: ~1500 tokens, ~$0.01.
+_demo_real_claude() {
+    info "MemoryHound demo — REAL CLAUDE smoke (triage subagent only)"
+    echo ""
+
+    # 1. Auth precondition. Mirror cmd_run semantics: API key OR ~/.claude
+    #    plus claude CLI on PATH. Bail loudly if neither auth path works.
+    if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ ! -d "$HOME/.claude" ]]; then
+        fail "No Claude auth detected."
+        info "    Set ANTHROPIC_API_KEY=sk-ant-...   OR run: claude /login"
+        return 1
+    fi
+    if ! command -v claude >/dev/null 2>&1; then
+        fail "claude CLI not on PATH. Install: https://docs.claude.com/en/docs/claude-code/quickstart"
+        return 1
+    fi
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+        info "Auth: ANTHROPIC_API_KEY"
     else
-        fail "    chain reported invalid — this is a bug"
+        info "Auth: claude CLI (subscription)"
+    fi
+
+    # 2. Token-cost confirmation. Honors MH_DEMO_NONINTERACTIVE=1 for CI.
+    if [[ "${MH_DEMO_NONINTERACTIVE:-0}" != "1" ]]; then
+        echo ""
+        warn "About to invoke real Claude on the triage subagent."
+        warn "Estimated cost: ~\$0.01 (≤1500 tokens)."
+        warn "Set MH_DEMO_NONINTERACTIVE=1 to skip this prompt in CI."
+        local response=""
+        read -r -p "Continue? [y/N] " response || true
+        case "$response" in
+            [yY]|[yY][eE][sS]) ;;
+            *) info "Aborted by user."; return 0 ;;
+        esac
+    else
+        info "MH_DEMO_NONINTERACTIVE=1 — skipping y/N prompt."
+    fi
+
+    # 3. Self-collect into the _demo case dir.
+    local case_id="_demo"
+    local case_dir="${MH_CASES_DIR}/${case_id}"
+    rm -rf "$case_dir"
+    mkdir -p "${case_dir}/input" "${case_dir}/output"
+    info "Step 1: self-collect host artifacts → ${case_dir}/input/"
+    if ! "${MH_HOME}/scripts/self-collect.sh" "${case_dir}/input" 2>&1 | sed 's/^/    /'; then
+        fail "self-collect.sh failed"
         return 1
     fi
 
-    echo ""
-    info "Step 6: TAMPER one entry (silently change a finding's classification)"
-    cp "$chain" "${chain}.bak"
-    sed -i.tmp 's/"os":"macos"/"os":"linux"/' "$chain"
-    rm -f "${chain}.tmp"
-    ok "    swapped one 'macos' classification to 'linux'"
+    # 4. Invoke the orchestrator with the per-node opt-in.
+    #    MH_NO_CLAUDE=1 keeps analyze + verifier_pass stubbed.
+    #    MH_REAL_CLAUDE_NODES=triage flips ONLY the triage node to real Claude.
+    info "Step 2: mh-orchestrate run ${case_id} --recursion-limit 30"
+    info "    MH_NO_CLAUDE=1 MH_REAL_CLAUDE_NODES=triage"
+    local start_ts=$SECONDS
+    local exit_code=0
+    MH_NO_CLAUDE=1 MH_REAL_CLAUDE_NODES=triage \
+        cmd_orchestrate "$case_id" --recursion-limit 30 || exit_code=$?
+    local elapsed=$((SECONDS - start_ts))
 
+    # 5. Report.
     echo ""
-    info "Step 7: re-verify — chain should DETECT the tamper"
-    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain" 2>&1 | head -1; then
-        fail "    chain reported valid AFTER tamper — this is a bug"
-        return 1
+    info "Real-Claude smoke complete:"
+    echo "    exit_code:    $exit_code"
+    echo "    elapsed:      ${elapsed}s"
+    local audit_log="${case_dir}/output/audit.jsonl"
+    if [[ -f "$audit_log" ]]; then
+        echo "    audit lines:  $(wc -l < "$audit_log" | tr -d ' ')"
     else
-        ok "    ✗ chain INVALID — tamper detected (as expected)"
+        warn "    audit lines:  (no audit.jsonl emitted)"
     fi
-
-    echo ""
-    info "Step 8: restore + re-verify (chain valid again)"
-    mv "${chain}.bak" "$chain"
-    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain" >/dev/null; then
-        ok "    ✓ chain valid again"
-    fi
-
-    echo ""
-    ok "Local demo complete."
-    echo ""
-    info "What just happened:"
-    echo "    1. Collected $ingested real DFIR artifacts from your Mac (read-only)"
-    echo "    2. Ingested every byte into a tamper-evident hash chain"
-    echo "    3. Ran os_detect + matching parser on each → real findings extracted"
-    echo "    4. Verified chain → green"
-    echo "    5. Edited one entry post-hoc → chain detected it"
-    echo "    6. Restored → chain green again"
-    echo ""
-    info "Artifacts saved to:"
-    echo "    ${demo_dir}/input/    — read-only host artifact copies"
-    echo "    ${demo_dir}/output/chain-of-custody.jsonl  — the audit log (tamper-evident)"
-
-    if [[ $autonomous -eq 1 ]]; then
-        echo ""
-        info "════ AUTONOMOUS PHASE ═══════════════════════════════════════"
-        info "Now spawning Claude Code with triage-orchestrator skill."
-        info "Claude will autonomously call os_detect + mac_plist_get on each"
-        info "artifact, pin every finding, and produce a signed report."
-        echo ""
-
-        if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ ! -d "$HOME/.claude" ]]; then
-            fail "No Claude auth configured. Run one of:"
-            echo "    claude /login                          # Pro/Max subscription"
-            echo "    export ANTHROPIC_API_KEY=sk-ant-...    # API key"
-            return 1
-        fi
-
-        if ! command -v claude >/dev/null 2>&1; then
-            fail "claude CLI not on PATH. See docs.claude.com/en/docs/claude-code/quickstart"
-            return 1
-        fi
-
-        export CASE_ID="_demo"
-        export EVIDENCE_PATH="${demo_dir}/input"
-        export OUTPUT_PATH="${demo_dir}/output"
-
-        info "Launching Claude Code (this will take ~2-5 min and consume tokens)…"
-        cd "$MH_HOME"
-
-        local prompt
-        prompt="$(cat <<'EOP'
-Use the triage-orchestrator skill to autonomously triage every artifact under
-the EVIDENCE_PATH directory. For each artifact:
-
-1. Call os_detect to classify it.
-2. If macOS plist, call mac_plist_get to extract structured contents.
-3. Record findings with finding_record, every claim pinned to specific bytes
-   from the artifact (use the raw_excerpt field of the pin).
-4. When uncertain, call chain_acknowledge_gap rather than guessing.
-5. Stop when every artifact has been triaged.
-
-Final output should land in OUTPUT_PATH:
-  - findings.json (pinned findings)
-  - narrative.md (investigator-readable report)
-  - accuracy-report.md (FP/FN/uncertain tally)
-
-The Stop hook will verify the chain and sign the attestation.
-EOP
-)"
-
-        if claude_run "$prompt"; then
-            ok "Autonomous triage complete."
-            echo ""
-
-            # Sign attestation manually (Stop hook doesn't always fire in -p mode).
-            local key="${MH_KEYS_DIR}/ed25519.priv"
-            local findings="${demo_dir}/output/findings.json"
-            local chain="${demo_dir}/output/chain-of-custody.jsonl"
-            local attest="${demo_dir}/output/case-_demo.attestation.json"
-            if [[ -f "$key" ]] && [[ -f "$findings" ]] && [[ -f "$chain" ]]; then
-                info "Signing attestation with ed25519 key…"
-                "$MH_PY" -m protocol_sift_mcp.tools.evidence attest \
-                    --chain "$chain" \
-                    --findings "$findings" \
-                    --case-id "_demo" \
-                    --key "$key" \
-                    --output "$attest" >/dev/null && \
-                    ok "Attestation: $attest"
+    local msgs="${case_dir}/output/agent_messages.jsonl"
+    if [[ -f "$msgs" ]]; then
+        if command -v jq >/dev/null 2>&1; then
+            local triage_text
+            triage_text=$(jq -r '
+                select((.from_agent == "WindowsAgent" or .from_agent == "MacOSAgent" or .from_agent == "LinuxAgent")
+                       and .role == "response")
+                | .content
+            ' "$msgs" 2>/dev/null | head -1)
+            if [[ -n "$triage_text" ]]; then
+                echo "    triage final: $triage_text"
+            else
+                warn "    triage final: (no response message from triage subagent)"
             fi
-
-            info "Verifying chain + signature post-run:"
-            cmd_verify "_demo"
-            echo ""
-            info "Generating plain-English summary (no LLM, deterministic)…"
-            "$MH_PY" "${MH_HOME}/scripts/plain-summary.py" "$demo_dir" >/dev/null
-            ok "Plain-English summary at ${demo_dir}/output/summary.md"
-            echo ""
-            info "View everything in browser:"
-            echo "    ./bin/mh serve"
         else
-            fail "Claude Code exited non-zero. Check above for errors."
-            return 1
+            warn "    triage final: (jq not installed; skipping extraction)"
         fi
+    else
+        warn "    agent_messages.jsonl not found at ${msgs}"
     fi
+
+    return "$exit_code"
 }
 
 # ─── help ────────────────────────────────────────────────────────────────────
@@ -691,21 +669,19 @@ ${BOLD}USAGE${NC}
     mh <command> [args]
 
 ${BOLD}COMMANDS${NC}
-    init [--with-forensics]   First-time setup: venv, deps, ed25519 keys.
+    init [--with-forensics]   First-time setup: venv, deps.
                               --with-forensics adds heavy libs (Volatility, etc.)
-    doctor                    Health check across env, deps, auth, keys.
+    doctor                    Health check across env, deps, auth.
     self-collect [DEST]       Copy safe DFIR artifacts from this host into DEST
                               (default cases/_self/input). No root, no creds.
-    demo [--autonomous]       Real-data showcase: self-collect + parse + chain
-                              tamper-detect, all on YOUR machine, no tokens.
-                              --autonomous adds a Claude Code triage run after
-                              the local demo (consumes tokens).
+    demo [--autonomous]       Real-data showcase: self-collect + parse + audit log,
+                              all on YOUR machine, no tokens.
     run <case-id>             Run Claude Code triage on cases/<id>/input/.
+    orchestrate <case-id>     LangGraph state-machine triage (Sub-Plan 02+)
     report <case-id>          Generate plain-English summary from findings
                               (deterministic, no LLM, no tokens).
     serve [--port=N]          Local web viewer for cases (markdown rendered,
-                              chain log pretty-printed). Default port 8765.
-    verify <case-id>          Verify chain-of-custody integrity for a case.
+                              audit log pretty-printed). Default port 8765.
     status                    List cases + their phase.
     tools                     List MCP tools the agent can call.
     check                     Quick env probe (exit 0/1).
@@ -717,7 +693,15 @@ ${BOLD}WORKFLOW${NC}
     3. mkdir -p cases/case-001/input
        cp /path/to/evidence/* cases/case-001/input/
     4. mh run case-001                            # autonomous triage
-    5. mh verify case-001                         # validate chain + signature
+
+${BOLD}DEPLOYMENT${NC} (Sub-Plan 05)
+    scripts/install-sift.sh --check               Report prereq status (no changes)
+    scripts/install-sift.sh --install             Bootstrap host environment
+    docker compose up                             Local-build container path
+    docker pull ghcr.io/<owner>/memoryhound:sub-plan-05-complete
+                                                  Pre-built image (after tag push)
+
+    See docs/deployment.md for the full matrix.
 
 ${BOLD}DOCS${NC}
     docs/architecture.md      — full design
@@ -740,9 +724,9 @@ main() {
         demo)         cmd_demo "$@" ;;
         self-collect) cmd_self_collect "$@" ;;
         run)          cmd_run "$@" ;;
+        orchestrate)  cmd_orchestrate "$@" ;;
         report)       cmd_report "$@" ;;
         serve)        cmd_serve "$@" ;;
-        verify)       cmd_verify "$@" ;;
         status)       cmd_status "$@" ;;
         tools)        cmd_tools "$@" ;;
         check)        cmd_check "$@" ;;

@@ -1,0 +1,28 @@
+{
+  "case_id": "dfrws-2008-memory",
+  "evidence_class": "memory_dump",
+  "expected_os": "linux",
+  "os_details": {
+    "distro": "centos_5",
+    "kernel": "2.6.18-8.1.15.el5",
+    "architecture": "x86"
+  },
+  "source": {
+    "challenge": "DFRWS 2008 Forensic Challenge",
+    "upstream_url": "https://github.com/dfrws/dfrws2008-challenge/raw/master/details/dfrws2008-challenge.zip",
+    "upstream_sha1": "52014e22c843ece2736bce59f652f43e96035825",
+    "extracted_member": "response_data/challenge.mem",
+    "license": "public (DFRWS forensic challenge dataset, freely redistributed)"
+  },
+  "evidence_hashes": [
+    {
+      "path": "input/memory.raw",
+      "sha256": "2d3114b42a74a481a02709b16345f37fc489fd24172cb43e6cc6aa2d416675eb",
+      "size_bytes": 297795584
+    }
+  ],
+  "findings": [],
+  "attack_techniques": [],
+  "d3fend_recommendations": [],
+  "notes": "Skeleton — populate during Sub-Plan 06 accuracy work. Reference winning submission at https://github.com/dfrws/dfrws2008-challenge/tree/master/results/Cohen_Collet_Walters for canonical ground-truth findings."
+}

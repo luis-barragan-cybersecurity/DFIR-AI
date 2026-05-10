@@ -1,67 +1,72 @@
 # Usage
 
+> For setup, see [`deployment.md`](deployment.md).
+
 ## Prereqs
 
-- SANS SIFT Workstation OVA (Ubuntu 22.04-based VM)
-- Docker + docker compose
+Run on SIFT, stock Ubuntu, or any of the three deployment paths in [`deployment.md`](deployment.md).
+
 - Python 3.11
-- Anthropic API key
+- Docker + docker compose (Paths 1 & 2 only)
+- Anthropic API key, or `claude /login` once on host
 
 ## First-Time Setup
 
+Pick a deployment path from [`deployment.md`](deployment.md). For host install:
+
 ```bash
-git clone <repo>
-cd memory-hound
-./scripts/install.sh
+git clone https://github.com/saivarun3407/DFIR-AI.git memoryhound
+cd memoryhound
+bash scripts/install-sift.sh --install --with-forensics --with-symbols
+./bin/mh doctor
+```
+
+For local Docker build:
+
+```bash
+git clone https://github.com/saivarun3407/DFIR-AI.git memoryhound
+cd memoryhound
 docker compose build
 ```
 
 ## Running A Case
 
+Host install:
+
 ```bash
-mkdir -p input output
-cp /path/to/evidence/* input/
+mkdir -p cases/case-001/input
+cp /path/to/evidence/* cases/case-001/input/
 
 export ANTHROPIC_API_KEY="sk-ant-..."
-export CASE_ID=case-001
-docker compose up
+./bin/mh orchestrate case-001
 ```
 
-Watch for output in `output/`:
-- `chain-of-custody.jsonl` — append-only audit log (tamper-evident)
+Docker:
+
+```bash
+mkdir -p cases/case-001/input
+cp /path/to/evidence/* cases/case-001/input/
+
+export ANTHROPIC_API_KEY="sk-ant-..."
+docker compose run --rm memoryhound orchestrate case-001
+```
+
+Watch for output in `cases/case-001/output/`:
+- `audit.jsonl` — plain append-only audit log of every step
 - `findings.json` — structured findings, every one pinned
 - `narrative.md` — investigator-ready prose
 - `accuracy-report.md` — honest FP/FN/hallucination tally
-- `case-<id>.attestation.json` — signed attestation
 
-## Verifying A Run
+## Inspecting An Audit Log
 
-```bash
-python3 -m protocol_sift_mcp.tools.evidence chain_verify \
-    --chain output/chain-of-custody.jsonl
-
-# Verify attestation signature
-python3 scripts/verify_attestation.py \
-    --attestation output/case-001.attestation.json \
-    --pubkey keys/ed25519.pub
-```
-
-## Live Tamper Demo
-
-For the demo video:
+The audit log lives at `cases/<case-id>/output/audit.jsonl`. Inspect with:
 
 ```bash
-# 1. Show clean chain
-python3 -m protocol_sift_mcp.tools.evidence chain_verify --chain output/chain-of-custody.jsonl
-# ✓ Chain valid
-
-# 2. Tamper one entry
-sed -i 's/"confidence":"inferred"/"confidence":"confirmed"/' output/chain-of-custody.jsonl
-
-# 3. Re-verify — fails immediately
-python3 -m protocol_sift_mcp.tools.evidence chain_verify --chain output/chain-of-custody.jsonl
-# ✗ hash mismatch at line N
+head -5 cases/case-001/output/audit.jsonl | jq .
+wc -l cases/case-001/output/audit.jsonl
 ```
+
+Each line is one event: `session_init`, `evidence_ingest`, `tool_call`, `finding_recorded`, `session_finalize`. Sequence numbers increment monotonically.
 
 ## Replay (Reproducibility)
 

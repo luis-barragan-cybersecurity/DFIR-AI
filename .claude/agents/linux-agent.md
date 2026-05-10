@@ -5,7 +5,7 @@ tools:
   - mcp__protocol_sift__linux_*
   - mcp__protocol_sift__memory_volatility
   - mcp__protocol_sift__finding_record
-  - mcp__protocol_sift__chain_acknowledge_gap
+  - mcp__protocol_sift__audit_append
   - mcp__protocol_sift__hash
 ---
 

@@ -14,5 +14,6 @@
       "confidence_floor": "inferred"
     }
   ],
+  "d3fend_recommendations": [],
   "expected_hallucinations": 0
 }

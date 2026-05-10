@@ -1,10 +1,10 @@
-"""Typed schemas for findings, pins, chain entries, and attestations."""
+"""Typed schemas for findings and pins."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -53,46 +53,11 @@ class Finding(BaseModel):
     @classmethod
     def at_least_one_pin(cls, v: list[Pin]) -> list[Pin]:
         if len(v) < 1:
-            raise ValueError("Finding requires at least one pin (use chain_acknowledge_gap to refuse instead)")
+            raise ValueError(
+                "Finding requires at least one pin "
+                "(use confidence='unknown' with a gap-explaining claim instead)"
+            )
         return v
-
-
-ChainEvent = Literal[
-    "chain_init",
-    "evidence_ingest",
-    "tool_call",
-    "finding_recorded",
-    "verifier_result",
-    "self_correction",
-    "gap_acknowledged",
-    "tool_failure",
-    "chain_finalize",
-]
-
-
-class ChainEntry(BaseModel):
-    seq: int = Field(ge=0)
-    prev_hash: str
-    ts: datetime
-    event: ChainEvent
-    data: dict[str, Any]
-    hash: str = Field(
-        min_length=64,
-        max_length=64,
-        description="sha256 hex of seq||prev_hash||ts||event||canonical_data",
-    )
-
-
-class Attestation(BaseModel):
-    type_: str = Field(default="https://in-toto.io/Statement/v1", alias="_type")
-    subject: list[dict[str, Any]]
-    predicate_type: str = Field(
-        default="https://memoryhound.dev/finding-attestation/v1",
-        alias="predicateType",
-    )
-    predicate: dict[str, Any]
-
-    model_config = {"populate_by_name": True}
 
 
 class RegistryValueType(StrEnum):
