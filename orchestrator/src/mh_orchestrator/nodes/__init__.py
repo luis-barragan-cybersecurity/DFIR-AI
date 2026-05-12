@@ -12,6 +12,7 @@ from . import (
     analyze,
     attack_tag,
     contain,
+    correlate,
     d3fend_recommend,
     declare_incident,
     detect,
@@ -19,6 +20,7 @@ from . import (
     human_in_loop,
     kill_chain,
     lessons_learned,
+    manifest_ingest,
     recover,
     remediation,
     scope,
@@ -53,6 +55,7 @@ def record_audit(state: IncidentState, *, event: str, data: dict[str, Any]) -> N
 # §11.4 phase mapping in picerl.NODE_TO_PICERL uses the longer descriptive
 # names — see picerl.picerl_phase_for callers in each node body).
 NODES: dict[str, Callable[[IncidentState], IncidentState]] = {
+    "manifest_ingest": manifest_ingest.run,
     "session_init": session_init.run,
     "detect": detect.run,
     "triage": triage.run,
@@ -70,5 +73,6 @@ NODES: dict[str, Callable[[IncidentState], IncidentState]] = {
     "lessons_learned": lessons_learned.run,
     "remediation": remediation.run,
     "verifier_pass": verifier_pass.run,
+    "correlate": correlate.run,
     "session_finalize": session_finalize.run,
 }

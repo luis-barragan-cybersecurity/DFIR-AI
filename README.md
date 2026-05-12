@@ -15,13 +15,14 @@ Submission to the [SANS FIND EVIL!](https://findevil.devpost.com) Hackathon (Apr
 |---|---|
 | **What** | Autonomous IR triage agent — drop evidence, get a pinned forensic report |
 | **How** | Custom MCP server + Claude Code skills/agents/hooks + LangGraph state machine |
-| **Surface** | 13 typed forensic tools · 13 skills · 4 specialist subagents · 5 lifecycle hooks · 17-node IR graph |
-| **OS coverage** | Windows (registry, EVTX, Prefetch, LNK), macOS (plist, KnowledgeC), Linux (shell history), Memory (Volatility 3) |
+| **Surface** | 30+ typed forensic tools across 8 SIFT categories · 13 skills · 4 specialist subagents · 5 lifecycle hooks · 18-node IR graph + correlator |
+| **OS coverage** | Windows (registry, EVTX, Prefetch, LNK, MFT, Amcache via EZ Tools), macOS (plist, KnowledgeC), Linux (shell history, journald, audit), Memory (Volatility 3 — 45+ plugins; MemProcFS FindEvil), Disk (Sleuth Kit — fls/icat/mmls/mactime/istat), Timeline (Plaso log2timeline + psort), Network (tshark, Zeek), Malware/Carving (YARA, bulk_extractor, binwalk, strings) |
 | **Frameworks** | NIST CSF 2.0 · ISO/IEC 27035-1:2023 · SANS PICERL · MITRE ATT&CK · D3FEND |
-| **Trust** | Schema-rejected un-pinned findings · independent Verifier subagent · plain append-only audit log |
+| **Trust** | Schema-rejected un-pinned findings · independent Verifier subagent with self-correction loop · cross-finding Correlator · **sha256-chained audit log** · **SHA256 manifest at ingest** · `mh verify` spoliation re-check |
 | **Deploy** | Pre-built Docker · Local Docker build · Host install (SIFT/Ubuntu) |
 | **Auth** | Pro/Max subscription · Anthropic API key · Bedrock · Vertex |
-| **Code** | ~10K LoC Python · 41 test files · 213 tests passing · CI green |
+| **Code** | ~12K LoC Python · 50+ test files · 389 tests passing · CI green |
+| **Demo video** | _Recording in W6 (May 31 – Jun 6, 2026) — link added on upload._ Must show verifier dissent → re-analyze self-correction (per hackathon rules). |
 
 ---
 
@@ -99,6 +100,13 @@ cp /path/to/evidence/* cases/case-001/input/
 ./bin/mh run case-001             # skill-driven (free-form)
 # OR
 ./bin/mh orchestrate case-001     # LangGraph (deterministic)
+
+# 4. Prove chain-of-custody — re-hash input vs manifest, re-verify audit chain
+./bin/mh verify case-001          # exit 0 if no spoliation; non-zero on any break
+
+# 5. Browse the results
+./bin/mh serve                    # http://127.0.0.1:8765/
+./bin/mh report --exec case-001   # one-page executive report
 ```
 
 ---

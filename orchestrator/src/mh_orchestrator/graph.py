@@ -1,8 +1,9 @@
 """LangGraph StateGraph for MemoryHound.
 
-Full §11.2 14-IR-node topology with six conditional edges (the original
-five §11.3 gates plus the verifier dissent edge):
-  session_init → detect → triage
+Full §11.2 14-IR-node topology plus chain-of-custody anchor and cross-finding
+correlator, with six conditional edges (the original five §11.3 gates plus
+the verifier dissent edge):
+  manifest_ingest → session_init → detect → triage
   triage --[route_after_triage]--> {suppress | declare_incident}
   declare_incident → analyze
   analyze --[route_after_analyze]--> {analyze | attack_tag}
@@ -12,7 +13,8 @@ five §11.3 gates plus the verifier dissent edge):
   eradicate --[route_after_eradicate]--> {contain | recover}
   recover --[route_after_recover]--> {contain | lessons_learned}
   lessons_learned → remediation → verifier_pass
-  verifier_pass --[route_after_verifier_pass]--> {analyze | session_finalize}
+  verifier_pass --[route_after_verifier_pass]--> {analyze | correlate}
+  correlate → session_finalize
   suppress → session_finalize → END
 
 verifier_pass placement: locked Sub-Plan 03 decision is "single global
@@ -137,11 +139,13 @@ def route_after_verifier_pass(state: IncidentState) -> str:
     `_verifier_revision_count` (set inside verifier_pass) prevents loops.
 
     Returns:
-        "session_finalize" — verifier_complete (no dissent or cap reached).
+        "correlate"        — verifier_complete (no dissent or cap reached).
+                              correlate runs the cross-finding contradiction +
+                              gap detector before the reporter renders.
         "analyze"          — dissent + revision available → re-run analyze.
     """
     if state.get("_verifier_complete", False) is True:
-        return "session_finalize"
+        return "correlate"
     return "analyze"
 
 
@@ -177,7 +181,13 @@ def build_graph(recursion_limit: int | None = None) -> Any:
     for name, fn in NODES.items():
         g.add_node(name, fn)
 
-    g.set_entry_point("session_init")
+    g.set_entry_point("manifest_ingest")
+
+    # manifest_ingest is the chain-of-custody anchor — it walks the input
+    # tree once at the very start, writes output/manifest.json with sha256
+    # per artifact, and records a manifest_complete audit event. From there
+    # the rest of the §11.2 pipeline runs unchanged.
+    g.add_edge("manifest_ingest", "session_init")
 
     # Linear edges (deterministic single successor per §11.2)
     g.add_edge("session_init", "detect")
@@ -193,6 +203,9 @@ def build_graph(recursion_limit: int | None = None) -> Any:
     g.add_edge("human_in_loop", "eradicate")
     g.add_edge("lessons_learned", "remediation")
     g.add_edge("remediation", "verifier_pass")
+    # correlate sits between verifier_pass's "session_finalize" branch and
+    # session_finalize itself — cross-finding contradiction + gap detector.
+    g.add_edge("correlate", "session_finalize")
     g.add_edge("suppress", "session_finalize")
     g.add_edge("session_finalize", END)
 
@@ -221,9 +234,11 @@ def build_graph(recursion_limit: int | None = None) -> Any:
     )
     # Verifier dissent → route back through analyze (capped at one revision
     # by `_verifier_revision_count`; verifier_pass owns the cap logic).
+    # When verifier passes, we go through correlate first to surface
+    # cross-finding contradictions/gaps before the reporter renders.
     g.add_conditional_edges(
         "verifier_pass", route_after_verifier_pass,
-        {"analyze": "analyze", "session_finalize": "session_finalize"},
+        {"analyze": "analyze", "correlate": "correlate"},
     )
 
     compiled = g.compile()

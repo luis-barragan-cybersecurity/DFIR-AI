@@ -16,6 +16,7 @@ import pytest
 # - eradicate sets _reinfection_detected=False → recover
 # - recover sets _post_restore_alarms=False → lessons_learned
 EXPECTED_ORDER = [
+    "manifest_ingest",
     "session_init",
     "detect",
     "triage",
@@ -31,6 +32,7 @@ EXPECTED_ORDER = [
     "lessons_learned",
     "remediation",
     "verifier_pass",
+    "correlate",
     "session_finalize",
 ]
 
@@ -132,7 +134,7 @@ def test_graph_suppresses_low_severity_no_findings(tmp_path, monkeypatch):
     final = graph.invoke(s)
 
     assert final["_node_history"] == [
-        "session_init", "detect", "triage", "suppress", "session_finalize",
+        "manifest_ingest", "session_init", "detect", "triage", "suppress", "session_finalize",
     ]
     # suppress + session_finalize both leave phase='lessons'
     assert final["phase"] == "lessons"

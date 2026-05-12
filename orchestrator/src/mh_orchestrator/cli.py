@@ -22,6 +22,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     state = new_state(args.case_id)
     state["_output_dir"] = str(output_dir)
+    state["_input_dir"] = str(input_dir)
 
     # If --recursion-limit not passed, build_graph will honor
     # MH_LG_RECURSION_LIMIT env var, then DEFAULT_RECURSION_LIMIT.
