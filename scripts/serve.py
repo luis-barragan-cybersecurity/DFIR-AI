@@ -372,6 +372,9 @@ def render_history_jsonl(path: Path) -> str:
 # Recognized output artifacts (path -> (tab label, renderer kind)). Order
 # matters — used as the tab order in case views.
 TABS: list[tuple[str, str, str]] = [
+    # Exec is the leadership-facing one-pager. Listed first so it's the
+    # default click for any C/D-level reader visiting the case.
+    ("Exec",        "exec-report.md",             "md"),
     ("Summary",     "incident_summary.md",        "md"),
     ("Narrative",   "narrative.md",               "md"),
     ("Accuracy",    "accuracy-report.md",         "md"),
@@ -398,6 +401,7 @@ def case_card(case_dir: Path) -> str:
     file_count = len(files)
     pills: list[str] = []
     pill_classes = {
+        "Exec": "good",          # leadership-facing — surface it on the index card
         "Summary": "good",
         "Findings": "",
         "Audit": "warn",

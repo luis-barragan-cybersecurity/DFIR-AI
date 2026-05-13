@@ -236,6 +236,28 @@ install_apt_prereqs() {
             info "apt cache fresh — skipping update"
         fi
     fi
+
+    # Python 3.11+ is hard-required by pyproject.toml. SIFT Workstation
+    # (Ubuntu 22.04) ships python3.10 and has no python3.11 in default
+    # repos — we have to add the deadsnakes PPA when python3.11 isn't
+    # already known to apt. Skip the PPA if any python3.11+ is already
+    # installed system-wide.
+    if ! command -v python3.11 >/dev/null 2>&1 \
+            && ! command -v python3.12 >/dev/null 2>&1 \
+            && ! command -v python3.13 >/dev/null 2>&1; then
+        if ! apt-cache show python3.11 >/dev/null 2>&1; then
+            info "python3.11 not in apt cache — adding deadsnakes PPA"
+            run_root apt-get install -y --no-install-recommends \
+                software-properties-common ca-certificates || \
+                warn "couldn't pre-install software-properties-common"
+            if ! run_root add-apt-repository -y ppa:deadsnakes/ppa; then
+                fail "add-apt-repository ppa:deadsnakes/ppa failed — install python3.11 manually then re-run"
+                exit 1
+            fi
+            run_root apt-get update -qq || warn "post-PPA apt-get update returned non-zero — continuing"
+        fi
+    fi
+
     if ! run_root apt-get install -y --no-install-recommends \
             python3.11 python3.11-venv python3-pip git curl ca-certificates \
             jq unzip libmagic1; then

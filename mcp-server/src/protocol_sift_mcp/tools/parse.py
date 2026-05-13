@@ -260,8 +260,94 @@ def sqlite_query(db_path: str, query: str) -> list[dict[str, Any]]:
     raise NotImplementedError("sqlite_query — implement W2")
 
 
-def yara_scan(target_path: str, rule_path: str) -> list[dict[str, Any]]:
-    """TODO(W2): YARA scan against memory dump or file."""
-    _ = assert_input_path(target_path)
-    _ = Path(rule_path)
-    raise NotImplementedError("yara_scan — implement W2")
+class YaraToolError(Exception):
+    """yara-python missing, rules compilation failure, or scan boundary error."""
+
+
+def yara_scan(
+    target_path: str,
+    rule_path: str,
+    *,
+    recursive: bool = True,
+    max_hits: int = 10000,
+) -> list[dict[str, Any]]:
+    """Compile a YARA ruleset and scan target_path for matches.
+
+    target_path: file or directory under EVIDENCE_PATH. If a directory and
+        recursive=True, every regular file is scanned.
+    rule_path: path to a .yar/.yara rule file (NOT sandbox-asserted —
+        rules ship from the analyst's library, not from evidence).
+
+    Returns a flat list of hit records:
+        [{path, rule, namespace, tags, strings: [{identifier, offset, data_hex}]}]
+
+    Bounded by `max_hits` to prevent OOM on noisy rules. Skips files that
+    error on open (records the error in the result for visibility).
+    """
+    target = assert_input_path(target_path)
+    rules_path = Path(rule_path)
+    if not rules_path.exists():
+        raise YaraToolError(f"rule file does not exist: {rules_path}")
+
+    try:
+        import yara  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise YaraToolError(
+            "yara-python not installed. Install with: pip install yara-python"
+        ) from exc
+
+    try:
+        rules = yara.compile(filepath=str(rules_path))
+    except Exception as exc:  # yara.SyntaxError, etc. — keep broad
+        raise YaraToolError(f"failed to compile {rules_path}: {exc}") from exc
+
+    hits: list[dict[str, Any]] = []
+
+    def _scan_one(path: Path) -> None:
+        try:
+            matches = rules.match(str(path), timeout=120)
+        except Exception as exc:  # IOError, MemoryError, yara timeouts
+            hits.append({"path": str(path), "error": f"{type(exc).__name__}: {exc}"})
+            return
+        for m in matches:
+            if len(hits) >= max_hits:
+                return
+            string_rows: list[dict[str, Any]] = []
+            for s in getattr(m, "strings", []) or []:
+                # yara-python's StringMatch API varies by version — be defensive.
+                try:
+                    identifier = getattr(s, "identifier", None) or s[1]
+                    instances = getattr(s, "instances", None) or [(s[0], s[2])]
+                    for inst in instances:
+                        offset = getattr(inst, "offset", None) if hasattr(inst, "offset") else inst[0]
+                        data = getattr(inst, "matched_data", None) if hasattr(inst, "matched_data") else inst[1]
+                        string_rows.append({
+                            "identifier": identifier,
+                            "offset": offset,
+                            "data_hex": bytes(data or b"").hex()[:512],
+                        })
+                except Exception:
+                    string_rows.append({"identifier": "<opaque>", "offset": -1, "data_hex": ""})
+            hits.append({
+                "path": str(path),
+                "rule": m.rule,
+                "namespace": getattr(m, "namespace", "default"),
+                "tags": list(getattr(m, "tags", []) or []),
+                "strings": string_rows,
+            })
+
+    if target.is_file():
+        _scan_one(target)
+    elif target.is_dir() and recursive:
+        for p in sorted(target.rglob("*")):
+            if p.is_file():
+                _scan_one(p)
+                if len(hits) >= max_hits:
+                    break
+    elif target.is_dir():
+        for p in sorted(target.iterdir()):
+            if p.is_file():
+                _scan_one(p)
+                if len(hits) >= max_hits:
+                    break
+    return hits

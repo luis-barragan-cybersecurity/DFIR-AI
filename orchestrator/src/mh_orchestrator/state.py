@@ -65,6 +65,7 @@ class IncidentState(TypedDict, total=False):
     # Internal — not in §11.1 but needed for plumbing
     _node_history: list[str]
     _output_dir: str
+    _input_dir: str
     _detected_os: Literal["windows", "macos", "linux", "unknown"]
     _analyze_iter: int
     _rca_complete: bool
@@ -99,6 +100,7 @@ def new_state(incident_id: str) -> IncidentState:
         "affected_data": [],
         "_node_history": [],
         "_output_dir": "",
+        "_input_dir": "",
         "_detected_os": "unknown",
         "_analyze_iter": 0,
         "_rca_complete": False,
@@ -134,6 +136,7 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "affected_data": list(s.get("affected_data", [])),
         "_node_history": list(s.get("_node_history", [])),
         "_output_dir": s.get("_output_dir", ""),
+        "_input_dir": s.get("_input_dir", ""),
         "_detected_os": s.get("_detected_os", "unknown"),
         "_analyze_iter": s.get("_analyze_iter", 0),
         "_rca_complete": s.get("_rca_complete", False),
@@ -168,6 +171,7 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["affected_data"] = list(d.get("affected_data", []))
     s["_node_history"] = list(d.get("_node_history", []))
     s["_output_dir"] = d.get("_output_dir", "")
+    s["_input_dir"] = d.get("_input_dir", "")
     s["_detected_os"] = d.get("_detected_os", "unknown")
     s["_analyze_iter"] = d.get("_analyze_iter", 0)
     s["_rca_complete"] = d.get("_rca_complete", False)

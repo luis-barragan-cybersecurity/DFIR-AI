@@ -182,6 +182,318 @@ def _per_finding_table_row(f: dict) -> str:
     return f"| {fid} | {confidence} | {claim} | {techniques} | {rationale} |"
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Executive Summary — leadership-facing, deterministic
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Audience: CEO, COO, CFO, CISO, CLO/General Counsel, CMO, CHRO, board
+# directors, and the corresponding D-level (VP-Eng, VP-Legal, VP-Comms,
+# Head of HR). They do not read forensic narrative; they read decisions
+# and risks. This section gives each role one paragraph in plain English.
+#
+# We map MITRE ATT&CK technique IDs to the leadership *concern* each
+# raises, so the per-role text is grounded in the actual findings rather
+# than boilerplate. Mapping is intentionally over-inclusive: techniques
+# touch multiple roles (e.g. credential dumping touches CISO + CLO + CHRO).
+
+# concern_id → human-readable concern label
+_CONCERNS: dict[str, str] = {
+    "credential_compromise":  "compromised user credentials",
+    "data_exfil_cloud":       "data exfiltration via cloud sync",
+    "data_exfil_web":         "data exfiltration via webmail / file-share upload",
+    "data_exfil_physical":    "data exfiltration via USB / removable media",
+    "internet_exposed":       "internet-exposed remote-access service",
+    "valid_account_abuse":    "unauthorized use of a valid employee account",
+    "remote_access_intrusion":"hands-on remote access by an external party",
+    "ransomware_destruction": "destructive ransomware / wiper activity",
+    "lateral_movement":       "lateral movement across multiple systems",
+    "ip_collection":          "collection of intellectual-property documents",
+    "persistence_implant":    "implanted persistence so attacker can return",
+    "command_and_control":    "active command-and-control communication",
+}
+
+# ATT&CK technique → concerns. Sub-techniques inherit their parent's
+# concerns; the matcher tries the full ID first, then the bare T#### .
+_TECHNIQUE_CONCERNS: dict[str, tuple[str, ...]] = {
+    "T1003":   ("credential_compromise",),
+    "T1003.001": ("credential_compromise",),
+    "T1078":   ("valid_account_abuse",),
+    "T1133":   ("internet_exposed", "remote_access_intrusion"),
+    "T1021":   ("lateral_movement", "remote_access_intrusion"),
+    "T1021.001": ("lateral_movement", "remote_access_intrusion"),
+    "T1021.002": ("lateral_movement",),
+    "T1021.004": ("lateral_movement",),
+    "T1567":   ("data_exfil_cloud",),
+    "T1567.002": ("data_exfil_cloud",),
+    "T1041":   ("command_and_control", "data_exfil_cloud"),
+    "T1052":   ("data_exfil_physical",),
+    "T1052.001": ("data_exfil_physical",),
+    "T1530":   ("data_exfil_cloud", "ip_collection"),
+    "T1213":   ("ip_collection",),
+    "T1213.002": ("ip_collection",),
+    "T1486":   ("ransomware_destruction",),
+    "T1485":   ("ransomware_destruction",),
+    "T1490":   ("ransomware_destruction",),
+    "T1547":   ("persistence_implant",),
+    "T1547.001": ("persistence_implant",),
+    "T1543":   ("persistence_implant",),
+    "T1543.001": ("persistence_implant",),
+    "T1543.002": ("persistence_implant",),
+    "T1543.003": ("persistence_implant",),
+    "T1053":   ("persistence_implant",),
+    "T1053.003": ("persistence_implant",),
+    "T1053.005": ("persistence_implant",),
+    "T1071":   ("command_and_control",),
+    "T1071.001": ("command_and_control",),
+}
+
+# Role → concerns it cares about. This is the matrix that makes the
+# per-role takeaway sections meaningful.
+_ROLE_CONCERNS: dict[str, set[str]] = {
+    "CEO": {
+        "remote_access_intrusion", "ip_collection", "data_exfil_cloud",
+        "data_exfil_web", "ransomware_destruction",
+    },
+    "COO": {
+        "ransomware_destruction", "remote_access_intrusion",
+        "lateral_movement", "persistence_implant",
+    },
+    "CFO": {
+        "data_exfil_cloud", "data_exfil_web", "ransomware_destruction",
+        "ip_collection",
+    },
+    "CISO": {
+        "credential_compromise", "internet_exposed", "valid_account_abuse",
+        "lateral_movement", "persistence_implant", "command_and_control",
+        "remote_access_intrusion",
+    },
+    "Legal / General Counsel": {
+        "data_exfil_cloud", "data_exfil_web", "data_exfil_physical",
+        "credential_compromise", "ip_collection", "remote_access_intrusion",
+    },
+    "CMO / Comms": {
+        "data_exfil_cloud", "data_exfil_web", "ransomware_destruction",
+        "credential_compromise",
+    },
+    "CHRO / HR": {
+        "valid_account_abuse", "credential_compromise",
+    },
+}
+
+# Per-role one-sentence takeaway templates per concern. Keys: (role, concern).
+# Format strings receive the named scope counts via .format(...).
+_ROLE_TAKEAWAYS: dict[tuple[str, str], str] = {
+    # CEO
+    ("CEO", "remote_access_intrusion"): "An external party operated our system hands-on; treat this as a confirmed breach until eradication is verified.",
+    ("CEO", "ip_collection"): "{ip_count} intellectual-property documents were exposed across {project_count} projects; this is the asset at risk, not a hypothetical.",
+    ("CEO", "data_exfil_cloud"): "Data left the perimeter via cloud sync; assume the attacker has copies regardless of what we do now.",
+    ("CEO", "ransomware_destruction"): "Operational continuity is at stake; align with COO on recovery posture.",
+
+    # COO
+    ("COO", "remote_access_intrusion"): "Affected host(s) must be isolated immediately; expect 4-12 hours per host to rebuild from clean image.",
+    ("COO", "lateral_movement"): "Treat any system the affected account touched as suspect; widen the isolation perimeter.",
+    ("COO", "persistence_implant"): "Rebuilding without removing the persistence vector returns us to compromise; do not skip the eradication step.",
+    ("COO", "ransomware_destruction"): "Validate backups before any restore; restore-then-reinfect is the worst outcome.",
+
+    # CFO
+    ("CFO", "ip_collection"): "Financial exposure is keyed to the value of the exposed IP, not just incident response cost; engage Legal on disclosure obligations.",
+    ("CFO", "data_exfil_cloud"): "Anticipate regulatory filing costs (GDPR/CCPA/SEC depending on data class) on top of IR cost.",
+    ("CFO", "data_exfil_web"): "Plan for incident-response retainer plus possible regulatory penalties; ballpark IR alone runs $200k-$500k for an event of this scale.",
+    ("CFO", "ransomware_destruction"): "Cyber-insurance carrier must be notified within hours, not days; failure to notify can void coverage.",
+
+    # CISO
+    ("CISO", "credential_compromise"): "Rotate all credentials touched by the affected account, including service accounts the user could reach.",
+    ("CISO", "internet_exposed"): "The exposed service was internet-reachable; close the surface and audit every other internet-reachable service for the same misconfiguration.",
+    ("CISO", "valid_account_abuse"): "MFA / conditional-access policy gaps allowed the account to be used; review and harden.",
+    ("CISO", "lateral_movement"): "Network segmentation gaps need urgent review; assume east-west movement was possible to anywhere the account could authenticate.",
+    ("CISO", "persistence_implant"): "Endpoint detection must hunt for persistence artifacts named in the technical appendix before host return-to-service.",
+    ("CISO", "command_and_control"): "Block the named C2 destinations at egress and submit IOC to threat-intel sharing partners.",
+    ("CISO", "remote_access_intrusion"): "This was hands-on-keyboard, not automated; assume the attacker tailored their playbook to our environment.",
+
+    # Legal
+    ("Legal / General Counsel", "data_exfil_cloud"): "Probable data-disclosure event; evaluate breach-notification triggers under GDPR (Art. 33), HIPAA (45 CFR 164.408), CCPA (Civ. Code §1798.82), and SEC Reg S-K Item 1.05 if material.",
+    ("Legal / General Counsel", "data_exfil_web"): "Webmail/file-share upload presumes personal-cloud transfer; engage privilege early on the breach-counsel decision.",
+    ("Legal / General Counsel", "data_exfil_physical"): "USB/removable-media exfil raises insider-threat concerns; preserve chain-of-custody on the affected host now.",
+    ("Legal / General Counsel", "credential_compromise"): "Account-hijack obligations vary by jurisdiction and data class; pull the data inventory before drafting notice.",
+    ("Legal / General Counsel", "ip_collection"): "If the exposed IP includes trade secrets, document the misappropriation timeline now to preserve future remedies (DTSA / state UTSA).",
+    ("Legal / General Counsel", "remote_access_intrusion"): "Law-enforcement referral decision (FBI IC3 / local) should be made within 24-48 hours; once made, it limits some downstream choices.",
+
+    # CMO
+    ("CMO / Comms", "data_exfil_cloud"): "Prepare a customer-comms holding statement; do not commit to numbers until the data inventory is final.",
+    ("CMO / Comms", "data_exfil_web"): "If exposed data includes customer information, regulatory clock starts on first reasonable belief, not on completion of investigation.",
+    ("CMO / Comms", "ransomware_destruction"): "Operational impact may surface publicly via service outages before we choose to disclose; pre-position the comms.",
+    ("CMO / Comms", "credential_compromise"): "If passwords are reset broadly, prepare an internal explanation; staff will assume the worst absent guidance.",
+
+    # CHRO
+    ("CHRO / HR", "valid_account_abuse"): "Affected employee is a witness, not a suspect, until proven otherwise; coordinate with Legal on interview posture.",
+    ("CHRO / HR", "credential_compromise"): "Any employee whose credentials are rotated as part of containment needs explicit, non-blaming communication from HR within 24 hours.",
+}
+
+# What we're asking of each role this week — concrete, actionable.
+_ROLE_ASKS: dict[str, str] = {
+    "CEO": "Approve the containment posture and decide on customer-disclosure timing.",
+    "COO": "Authorize host isolation and confirm acceptable downtime budget for rebuild.",
+    "CFO": "Notify cyber-insurance carrier; pre-approve IR retainer ceiling.",
+    "CISO": "Drive the technical containment + hunt; close the exposed service today.",
+    "Legal / General Counsel": "Run the privileged-counsel decision and the breach-notification analysis.",
+    "CMO / Comms": "Pre-position internal + customer holding statements; do not publish without Legal sign-off.",
+    "CHRO / HR": "Coordinate with Legal on employee comms; ensure affected employee is supported, not isolated.",
+}
+
+
+def _concerns_from_techniques(attack_ids: list[str]) -> set[str]:
+    """Map observed ATT&CK IDs to the deduped set of leadership concerns."""
+    seen: set[str] = set()
+    for tid in attack_ids:
+        for cid in _TECHNIQUE_CONCERNS.get(tid, ()):
+            seen.add(cid)
+        # Sub-technique fallback to parent T####
+        if "." in tid:
+            parent = tid.split(".", 1)[0]
+            for cid in _TECHNIQUE_CONCERNS.get(parent, ()):
+                seen.add(cid)
+    return seen
+
+
+def _executive_paragraph(state: dict, scope: dict, concerns: set[str]) -> str:
+    """One paragraph in plain English. No MITRE codes, no PIDs."""
+    severity = state.get("severity") or "unknown"
+    detected_os = state.get("_detected_os") or "unknown"
+    hosts = len(scope.get("affected_hosts") or [])
+    users = len(scope.get("affected_users") or [])
+    data = len(scope.get("affected_data") or [])
+
+    severity_phrase = {
+        "high": "a HIGH-severity",
+        "critical": "a CRITICAL-severity",
+        "medium": "a medium-severity",
+        "low": "a low-severity",
+    }.get(severity.lower(), "an")
+
+    # Lead with what happened in plain English.
+    what = []
+    if "remote_access_intrusion" in concerns:
+        what.append("an external party operated one of our systems hands-on")
+    if "data_exfil_cloud" in concerns or "data_exfil_web" in concerns:
+        what.append("data left the perimeter through cloud / web channels")
+    if "ip_collection" in concerns:
+        what.append("intellectual-property documents were collected for exfiltration")
+    if "credential_compromise" in concerns:
+        what.append("user credentials were exposed")
+    if "ransomware_destruction" in concerns:
+        what.append("destructive activity was attempted")
+    if "persistence_implant" in concerns:
+        what.append("persistence was implanted so the attacker can return")
+    if not what:
+        what.append("suspicious activity was identified")
+    summary = " · ".join(what)
+
+    return (
+        f"This is {severity_phrase} incident on {detected_os} affecting "
+        f"{hosts} host(s), {users} user account(s), and {data} data location(s). "
+        f"In plain terms: {summary}. The technical appendix below documents every "
+        "claim with a tool and an evidence excerpt; this section translates "
+        "those findings into the decisions each leader needs to make in the next "
+        "24-48 hours."
+    )
+
+
+def _role_takeaway(role: str, role_concerns: set[str]) -> str:
+    """Concatenate the per-(role, concern) takeaway sentences that apply."""
+    lines: list[str] = []
+    # Stable order: by concern key
+    for concern in sorted(role_concerns):
+        text = _ROLE_TAKEAWAYS.get((role, concern))
+        if text:
+            lines.append(text)
+    if not lines:
+        return "No role-specific actions identified for this incident class."
+    return " ".join(lines)
+
+
+def _render_executive_summary(state: dict, findings: list[dict], scope: dict) -> list[str]:
+    """Return Markdown lines for the Executive Summary section.
+
+    Deterministic — no LLM call. Reads attack_techniques from state +
+    findings, maps to leadership concerns, emits one paragraph + a
+    per-role table. Designed to be the FIRST thing C/D-level readers
+    see when they open the report or click the Exec tab.
+    """
+    techniques = sorted(set(state.get("attack_techniques") or []) |
+                        {t for f in findings for t in (f.get("mitre_attck") or [])})
+    concerns = _concerns_from_techniques(techniques)
+    # Augment with derived signals not always present as ATT&CK IDs.
+    services = state.get("affected_services") or []
+    if any("OneDrive" in s or "GoogleDrive" in s or "Dropbox" in s or "iCloud" in s
+           for s in services):
+        concerns.add("data_exfil_cloud")
+    if scope.get("affected_data"):
+        concerns.add("ip_collection")
+
+    project_count = sum(
+        1 for d in (scope.get("affected_data") or [])
+        if "Projects" in d or "Project" in d or "Research" in d
+    )
+    ip_count = len(scope.get("affected_data") or [])
+
+    lines: list[str] = []
+    lines.append("## Executive Summary")
+    lines.append("")
+    lines.append(
+        "_Plain English. No MITRE codes, no PIDs, no jargon. Aimed at C/D-level "
+        "leadership: CEO, COO, CFO, CISO, Legal/General Counsel, CMO/Comms, "
+        "CHRO/HR, and the board. The technical detail starts in the next section._"
+    )
+    lines.append("")
+    lines.append(_executive_paragraph(state, scope, concerns))
+    lines.append("")
+
+    if not concerns:
+        lines.append("_No leadership-actionable concerns triggered by the observed evidence._")
+        lines.append("")
+        return lines
+
+    lines.append("### What this means for each leader")
+    lines.append("")
+    lines.append("| Role | What you need to know | What we're asking of you |")
+    lines.append("|---|---|---|")
+    for role, role_cares in _ROLE_CONCERNS.items():
+        relevant = concerns & role_cares
+        if not relevant:
+            continue
+        takeaway = _role_takeaway(role, relevant).format(
+            ip_count=ip_count,
+            project_count=project_count,
+        )
+        ask = _ROLE_ASKS.get(role, "")
+        # Markdown table cells can't contain raw newlines — use <br> if needed.
+        lines.append(f"| **{role}** | {takeaway} | {ask} |")
+    lines.append("")
+
+    # Top-3 things the entire leadership team should agree on.
+    lines.append("### The three calls leadership has to make this week")
+    lines.append("")
+    calls = []
+    if "remote_access_intrusion" in concerns or "lateral_movement" in concerns:
+        calls.append("**Containment posture** — isolate now vs. observe to learn the attacker's intent (CISO + COO).")
+    if "data_exfil_cloud" in concerns or "data_exfil_web" in concerns or "ip_collection" in concerns:
+        calls.append("**Disclosure timing** — when and to whom (Legal + CMO + CEO).")
+    if "credential_compromise" in concerns or "valid_account_abuse" in concerns:
+        calls.append("**Credential reset scope** — single account vs. broad rotation (CISO + CHRO).")
+    if "ransomware_destruction" in concerns:
+        calls.append("**Restore-vs-rebuild** — restore from backup vs. clean rebuild (COO + CFO).")
+    if "persistence_implant" in concerns:
+        calls.append("**Eradication threshold** — how confident must we be before declaring the attacker out (CISO + COO).")
+    if not calls:
+        calls.append("**Containment + comms posture** — alignment between technical containment and public stance.")
+    for i, c in enumerate(calls[:3], start=1):
+        lines.append(f"{i}. {c}")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return lines
+
+
 def _scope_summary(state: dict, findings: list[dict]) -> dict:
     """Use the orchestrator's scope.compute_scope so the exec report works
     even if the case predates the scope node (computes from findings).
@@ -228,7 +540,10 @@ def render(case_dir: Path) -> str:
     )
     lines.append("")
 
-    # ─── 1. Executive Summary ────────────────────────────────────────────
+    # ─── 0. Executive Summary (C/D-level, plain English) ─────────────────
+    lines.extend(_render_executive_summary(state, findings, scope_data))
+
+    # ─── 1. At a Glance (numeric snapshot for the responder) ─────────────
     lines.append("## At a Glance")
     lines.append("")
     lines.append(f"- **Severity**: {severity}")

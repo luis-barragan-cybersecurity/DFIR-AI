@@ -294,6 +294,280 @@ async def list_tools() -> list[Tool]:
                 "required": ["history_path"],
             },
         ),
+        Tool(
+            name="yara_scan",
+            description=(
+                "Compile a YARA ruleset and scan a target file or directory under /input. "
+                "Returns hits: {path, rule, namespace, tags, strings: [{identifier, offset, data_hex}]}. "
+                "Bounded by max_hits to prevent OOM."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target_path": {"type": "string", "description": "File or dir under /input"},
+                    "rule_path":   {"type": "string", "description": "Path to .yar/.yara rule file"},
+                    "recursive":   {"type": "boolean", "default": True},
+                    "max_hits":    {"type": "integer", "default": 10000, "minimum": 1},
+                },
+                "required": ["target_path", "rule_path"],
+            },
+        ),
+        Tool(
+            name="memprocfs_findevil",
+            description=(
+                "Run MemProcFS FindEvil over a memory image and return parsed hit lines. "
+                "Linux-only; requires the memprocfs binary. Mounts read-only via FUSE."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "memory_path": {"type": "string", "description": "Memory image under /input"},
+                    "mount_point": {"type": "string", "default": "/tmp/memprocfs-mh"},
+                    "timeout_sec": {"type": "integer", "default": 1200, "minimum": 60, "maximum": 7200},
+                },
+                "required": ["memory_path"],
+            },
+        ),
+        Tool(
+            name="tsk_fls",
+            description=(
+                "Sleuth Kit `fls` — list files + directories in a disk image. "
+                "Returns rows: {type, flags, inode, name}. recursive=True for full tree."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "image_path": {"type": "string"},
+                    "inode":      {"type": "string"},
+                    "recursive":  {"type": "boolean", "default": False},
+                },
+                "required": ["image_path"],
+            },
+        ),
+        Tool(
+            name="tsk_icat",
+            description=(
+                "Sleuth Kit `icat` — extract file content by inode from a disk image. "
+                "Returns {size_bytes, truncated, data_hex}. Bounded by max_bytes."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "image_path": {"type": "string"},
+                    "inode":      {"type": "string"},
+                    "max_bytes":  {"type": "integer", "default": 52428800, "minimum": 1},
+                },
+                "required": ["image_path", "inode"],
+            },
+        ),
+        Tool(
+            name="tsk_mmls",
+            description="Sleuth Kit `mmls` — list disk partition layout.",
+            inputSchema={
+                "type": "object",
+                "properties": {"image_path": {"type": "string"}},
+                "required": ["image_path"],
+            },
+        ),
+        Tool(
+            name="tsk_mactime",
+            description=(
+                "Sleuth Kit `mactime` — render an fls-generated bodyfile into a MACB "
+                "timeline. body_path lives under /input."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "body_path":     {"type": "string"},
+                    "output_format": {"type": "string", "enum": ["csv", "year"], "default": "csv"},
+                },
+                "required": ["body_path"],
+            },
+        ),
+        Tool(
+            name="tsk_istat",
+            description="Sleuth Kit `istat` — detailed metadata about an inode in a disk image.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "image_path": {"type": "string"},
+                    "inode":      {"type": "string"},
+                },
+                "required": ["image_path", "inode"],
+            },
+        ),
+        Tool(
+            name="plaso_log2timeline",
+            description=(
+                "Plaso `log2timeline.py` — extract a .plaso storage file from a source. "
+                "source under /input, storage under /output. parsers defaults to "
+                "'win_gen,webhist,sysreg' (IR triage subset); pass 'all' for full pass."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_path":  {"type": "string"},
+                    "storage_path": {"type": "string"},
+                    "parsers":      {"type": "string", "default": "win_gen,webhist,sysreg"},
+                    "timeout_sec":  {"type": "integer", "default": 3600, "minimum": 60, "maximum": 14400},
+                },
+                "required": ["source_path", "storage_path"],
+            },
+        ),
+        Tool(
+            name="plaso_psort",
+            description=(
+                "Plaso `psort.py` — render a .plaso store into a sorted timeline. "
+                "Default format json_line; events[] returned inline up to max_events."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "storage_path":  {"type": "string"},
+                    "output_format": {"type": "string", "default": "json_line",
+                                      "enum": ["json_line", "l2tcsv", "l2ttln", "dynamic", "tln"]},
+                    "output_path":   {"type": "string"},
+                    "max_events":    {"type": "integer", "default": 200000, "minimum": 1},
+                },
+                "required": ["storage_path"],
+            },
+        ),
+        Tool(
+            name="ez_evtxecmd",
+            description=(
+                "EZ Tools EvtxECmd — Windows event log parser (CSV output). "
+                "Requires dotnet runtime + EZ_TOOLS_DIR. Falls back: use win_evtx_query."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "log_path":    {"type": "string"},
+                    "output_dir":  {"type": "string"},
+                    "max_rows":    {"type": "integer", "default": 100000, "minimum": 1},
+                },
+                "required": ["log_path", "output_dir"],
+            },
+        ),
+        Tool(
+            name="ez_mftecmd",
+            description="EZ Tools MFTECmd — NTFS $MFT parser (CSV output).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mft_path":   {"type": "string"},
+                    "output_dir": {"type": "string"},
+                    "max_rows":   {"type": "integer", "default": 100000},
+                },
+                "required": ["mft_path", "output_dir"],
+            },
+        ),
+        Tool(
+            name="ez_recmd",
+            description=(
+                "EZ Tools RECmd — registry hive parser. Pass batch_keyword to run a "
+                "named Batch (e.g. 'RegistryASEPs'). Falls back: win_registry_get."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "hive_path":     {"type": "string"},
+                    "output_dir":    {"type": "string"},
+                    "batch_keyword": {"type": "string"},
+                },
+                "required": ["hive_path", "output_dir"],
+            },
+        ),
+        Tool(
+            name="ez_amcacheparser",
+            description="EZ Tools AmcacheParser — Amcache.hve execution evidence parser.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "amcache_path": {"type": "string"},
+                    "output_dir":   {"type": "string"},
+                },
+                "required": ["amcache_path", "output_dir"],
+            },
+        ),
+        Tool(
+            name="tshark_extract",
+            description=(
+                "Wireshark `tshark` field extraction over a pcap. fields[] is the column "
+                "list; display_filter is a sanitized Wireshark filter string."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pcap_path":      {"type": "string"},
+                    "display_filter": {"type": "string"},
+                    "fields":         {"type": "array", "items": {"type": "string"}},
+                    "max_rows":       {"type": "integer", "default": 100000},
+                },
+                "required": ["pcap_path"],
+            },
+        ),
+        Tool(
+            name="zeek_log_read",
+            description=(
+                "Read a Zeek TSV log (conn.log, dns.log, ssl.log, etc.). Honors "
+                "#fields header for column names; returns rows + fields."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "log_path": {"type": "string"},
+                    "max_rows": {"type": "integer", "default": 100000},
+                },
+                "required": ["log_path"],
+            },
+        ),
+        Tool(
+            name="bulk_extractor",
+            description=(
+                "bulk_extractor — pull IPs/URLs/emails/CCN patterns from any blob. "
+                "Writes feature files under output_dir (must live under /output)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "image_path": {"type": "string"},
+                    "output_dir": {"type": "string"},
+                    "features":   {"type": "string", "default": "all"},
+                },
+                "required": ["image_path", "output_dir"],
+            },
+        ),
+        Tool(
+            name="binwalk",
+            description=(
+                "binwalk — identify embedded files / firmware structure in a binary. "
+                "recursive=True enables matryoshka mode."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target_path": {"type": "string"},
+                    "recursive":   {"type": "boolean", "default": False},
+                },
+                "required": ["target_path"],
+            },
+        ),
+        Tool(
+            name="strings_extract",
+            description=(
+                "Pure-Python ASCII strings extraction. Returns {offset, length, ascii} "
+                "per hit. No subprocess; bounded by max_strings + 1 GiB read cap."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target_path": {"type": "string"},
+                    "min_length":  {"type": "integer", "default": 6, "minimum": 4},
+                    "max_strings": {"type": "integer", "default": 100000, "minimum": 1},
+                },
+                "required": ["target_path"],
+            },
+        ),
     ]
 
 
@@ -378,6 +652,129 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         hist_result = linux_history_parse(arguments["history_path"])
         return [TextContent(type="text", text=json.dumps(hist_result, default=str))]
+    if name == "yara_scan":
+        from .tools.parse import yara_scan
+
+        yres = yara_scan(
+            arguments["target_path"], arguments["rule_path"],
+            recursive=arguments.get("recursive", True),
+            max_hits=arguments.get("max_hits", 10000),
+        )
+        return [TextContent(type="text", text=json.dumps(yres, default=str))]
+    if name == "memprocfs_findevil":
+        from .tools.memory import memprocfs_findevil
+
+        mres = memprocfs_findevil(
+            arguments["memory_path"],
+            mount_point=arguments.get("mount_point", "/tmp/memprocfs-mh"),
+            timeout_sec=arguments.get("timeout_sec", 1200),
+        )
+        return [TextContent(type="text", text=json.dumps(mres, default=str))]
+    if name == "tsk_fls":
+        from .tools.filesystem import fls
+
+        fres = fls(arguments["image_path"], inode=arguments.get("inode"),
+                   recursive=arguments.get("recursive", False))
+        return [TextContent(type="text", text=json.dumps(fres, default=str))]
+    if name == "tsk_icat":
+        from .tools.filesystem import icat
+
+        ires = icat(arguments["image_path"], arguments["inode"],
+                    max_bytes=arguments.get("max_bytes", 52428800))
+        return [TextContent(type="text", text=json.dumps(ires, default=str))]
+    if name == "tsk_mmls":
+        from .tools.filesystem import mmls
+
+        mmres = mmls(arguments["image_path"])
+        return [TextContent(type="text", text=json.dumps(mmres, default=str))]
+    if name == "tsk_mactime":
+        from .tools.filesystem import mactime
+
+        mtres = mactime(arguments["body_path"],
+                        output_format=arguments.get("output_format", "csv"))
+        return [TextContent(type="text", text=json.dumps(mtres, default=str))]
+    if name == "tsk_istat":
+        from .tools.filesystem import istat
+
+        isres = istat(arguments["image_path"], arguments["inode"])
+        return [TextContent(type="text", text=json.dumps(isres, default=str))]
+    if name == "plaso_log2timeline":
+        from .tools.timeline import log2timeline
+
+        l2t = log2timeline(
+            arguments["source_path"], arguments["storage_path"],
+            parsers=arguments.get("parsers", "win_gen,webhist,sysreg"),
+            timeout_sec=arguments.get("timeout_sec", 3600),
+        )
+        return [TextContent(type="text", text=json.dumps(l2t, default=str))]
+    if name == "plaso_psort":
+        from .tools.timeline import psort
+
+        ps = psort(
+            arguments["storage_path"],
+            output_format=arguments.get("output_format", "json_line"),
+            output_path=arguments.get("output_path"),
+            max_events=arguments.get("max_events", 200000),
+        )
+        return [TextContent(type="text", text=json.dumps(ps, default=str))]
+    if name == "ez_evtxecmd":
+        from .tools.win_artifacts import evtxecmd
+
+        ev = evtxecmd(arguments["log_path"], arguments["output_dir"],
+                      max_rows=arguments.get("max_rows", 100000))
+        return [TextContent(type="text", text=json.dumps(ev, default=str))]
+    if name == "ez_mftecmd":
+        from .tools.win_artifacts import mftecmd
+
+        mft = mftecmd(arguments["mft_path"], arguments["output_dir"],
+                      max_rows=arguments.get("max_rows", 100000))
+        return [TextContent(type="text", text=json.dumps(mft, default=str))]
+    if name == "ez_recmd":
+        from .tools.win_artifacts import recmd
+
+        rec = recmd(arguments["hive_path"], arguments["output_dir"],
+                    batch_keyword=arguments.get("batch_keyword"))
+        return [TextContent(type="text", text=json.dumps(rec, default=str))]
+    if name == "ez_amcacheparser":
+        from .tools.win_artifacts import amcacheparser
+
+        amc = amcacheparser(arguments["amcache_path"], arguments["output_dir"])
+        return [TextContent(type="text", text=json.dumps(amc, default=str))]
+    if name == "tshark_extract":
+        from .tools.network import tshark_extract
+
+        tsk = tshark_extract(
+            arguments["pcap_path"],
+            display_filter=arguments.get("display_filter"),
+            fields=arguments.get("fields"),
+            max_rows=arguments.get("max_rows", 100000),
+        )
+        return [TextContent(type="text", text=json.dumps(tsk, default=str))]
+    if name == "zeek_log_read":
+        from .tools.network import zeek_log_read
+
+        zk = zeek_log_read(arguments["log_path"], max_rows=arguments.get("max_rows", 100000))
+        return [TextContent(type="text", text=json.dumps(zk, default=str))]
+    if name == "bulk_extractor":
+        from .tools.carving import bulk_extractor
+
+        be = bulk_extractor(arguments["image_path"], arguments["output_dir"],
+                            features=arguments.get("features", "all"))
+        return [TextContent(type="text", text=json.dumps(be, default=str))]
+    if name == "binwalk":
+        from .tools.carving import binwalk
+
+        bw = binwalk(arguments["target_path"], recursive=arguments.get("recursive", False))
+        return [TextContent(type="text", text=json.dumps(bw, default=str))]
+    if name == "strings_extract":
+        from .tools.carving import strings_extract
+
+        se = strings_extract(
+            arguments["target_path"],
+            min_length=arguments.get("min_length", 6),
+            max_strings=arguments.get("max_strings", 100000),
+        )
+        return [TextContent(type="text", text=json.dumps(se, default=str))]
     raise ValueError(f"Unknown tool: {name}")
 
 

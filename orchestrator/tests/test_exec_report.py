@@ -143,6 +143,39 @@ def test_exec_report_advisory_footer(windows_case: Path) -> None:
     assert "advisory" in md.lower()
 
 
+def test_exec_report_starts_with_executive_summary(windows_case: Path) -> None:
+    md = _run(windows_case)
+    assert "## Executive Summary" in md
+    # Executive Summary must come BEFORE At a Glance
+    assert md.index("## Executive Summary") < md.index("## At a Glance")
+
+
+def test_exec_report_executive_summary_is_plain_english(windows_case: Path) -> None:
+    md = _run(windows_case)
+    exec_section = md.split("## Executive Summary", 1)[1].split("## At a Glance", 1)[0]
+    # No raw MITRE T-codes inside the exec summary section; they live in
+    # the Technical Appendix instead.
+    import re
+    matches = re.findall(r"\bT1\d{3}\b", exec_section)
+    assert not matches, f"Exec Summary leaked technical codes: {matches}"
+
+
+def test_exec_report_per_role_table_present(windows_case: Path) -> None:
+    md = _run(windows_case)
+    exec_section = md.split("## Executive Summary", 1)[1].split("## At a Glance", 1)[0]
+    # The roles we care about are surfaced when relevant concerns trigger.
+    # Windows-test fixture has T1059.001 (PowerShell) + T1547.001 (Run keys),
+    # which trigger persistence_implant → COO + CISO and that's it. Make
+    # the assertion conditional on the role's concerns matching the case.
+    assert "What this means for each leader" in exec_section
+    assert "**CISO**" in exec_section
+
+
+def test_exec_report_three_calls_section(windows_case: Path) -> None:
+    md = _run(windows_case)
+    assert "The three calls leadership has to make this week" in md
+
+
 def test_exec_report_handles_missing_state_json(tmp_path: Path) -> None:
     """Case with only findings.json (no orchestrator run) should still render."""
     case_dir = tmp_path / "no-state"
