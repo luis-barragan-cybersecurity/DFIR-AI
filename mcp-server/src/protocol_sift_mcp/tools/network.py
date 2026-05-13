@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from pathlib import Path
 from typing import Any
 
 from ..sandbox import assert_input_path
