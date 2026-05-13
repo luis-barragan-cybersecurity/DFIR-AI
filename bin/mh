@@ -586,6 +586,9 @@ cmd_status() {
         local phase="empty"
         if [[ -f "${case_dir}/output/findings.json" ]]; then
             phase="${GREEN}finished${NC}"
+        elif [[ -f "${case_dir}/output/manifest.json" ]] && [[ -f "${case_dir}/output/audit.jsonl" ]]; then
+            # Manifest + audit = demo / verify-only run completed cleanly.
+            phase="${GREEN}demo-complete${NC}"
         elif [[ -f "${case_dir}/output/audit.jsonl" ]]; then
             phase="${YELLOW}in-progress${NC}"
         elif [[ -d "${case_dir}/input" ]] && [[ -n "$(ls -A "${case_dir}/input" 2>/dev/null)" ]]; then
@@ -634,19 +637,42 @@ labels = {
     3: 'Tier 3 — bulk / audit / routing primitives',
 }
 descriptions = {
-    'memory_volatility':   'Volatility 3 plugins (pslist/psscan/netscan/malfind/svcscan/etc)',
-    'win_evtx_query':      'Windows event logs (4624/4625/4688/7045 = auth + exec + svc)',
-    'win_registry_get':    'Registry hives (Run/RunOnce/Services persistence)',
-    'win_lnk_parse':       'Windows .lnk shortcuts (target + drive_serial)',
-    'win_prefetch_parse':  'Windows .pf prefetch (execution proof)',
-    'mac_knowledgec_query':'macOS KnowledgeC (recent apps + focus)',
-    'mac_plist_get':       'macOS plist (LaunchAgents/Daemons + prefs)',
-    'linux_history_parse': 'bash + zsh history (recent commands)',
-    'hash':                'sha256 + sha1 + size',
-    'audit_append':        'append to plain audit log',
-    'finding_record':      'register finding (rejects un-pinned)',
-    'os_detect':           'magic-byte + dir-marker OS classification',
-    'magic_check':         'first-16-bytes signature probe',
+    # Memory + filesystem + timeline (heaviest signal first)
+    'memory_volatility':    'Volatility 3 — 45+ plugins (windows/linux/mac core+hiding+kernel)',
+    'memprocfs_findevil':   'MemProcFS FindEvil — built-in evil-hunt heuristics over memory',
+    'tsk_fls':              'Sleuth Kit fls — file + dir listing in a disk image',
+    'tsk_icat':             'Sleuth Kit icat — extract file content by inode',
+    'tsk_mmls':             'Sleuth Kit mmls — partition layout',
+    'tsk_mactime':          'Sleuth Kit mactime — MACB timeline from bodyfile',
+    'tsk_istat':            'Sleuth Kit istat — inode metadata',
+    'plaso_log2timeline':   'Plaso log2timeline — extract .plaso store from source',
+    'plaso_psort':          'Plaso psort — sort + render .plaso → json_line / csv',
+    # Windows artifacts
+    'win_evtx_query':       'Windows event logs (4624/4625/4688/7045 = auth + exec + svc)',
+    'win_registry_get':     'Registry hives (Run/RunOnce/Services persistence)',
+    'win_lnk_parse':        'Windows .lnk shortcuts (target + drive_serial)',
+    'win_prefetch_parse':   'Windows .pf prefetch (execution proof)',
+    'ez_evtxecmd':          'EZ Tools EvtxECmd — EVTX → CSV (needs dotnet)',
+    'ez_mftecmd':           'EZ Tools MFTECmd — NTFS MFT to CSV',
+    'ez_recmd':             'EZ Tools RECmd — registry hive + batch plugins',
+    'ez_amcacheparser':     'EZ Tools AmcacheParser — execution evidence',
+    # macOS + Linux
+    'mac_knowledgec_query': 'macOS KnowledgeC (recent apps + focus)',
+    'mac_plist_get':        'macOS plist (LaunchAgents/Daemons + prefs)',
+    'linux_history_parse':  'bash + zsh history (recent commands)',
+    # Network + malware + carving
+    'tshark_extract':       'Wireshark tshark field extraction over pcap',
+    'zeek_log_read':        'Zeek TSV log parser (conn/dns/ssl/http)',
+    'yara_scan':            'YARA — compile rules + scan file or directory',
+    'bulk_extractor':       'bulk_extractor — IPs/URLs/emails/CCN from any blob',
+    'binwalk':              'binwalk — embedded files + firmware structure',
+    'strings_extract':      'pure-Python ASCII strings extraction',
+    # Audit + finding + routing
+    'hash':                 'sha256 + sha1 + size',
+    'audit_append':         'append to hash-chained audit log',
+    'finding_record':       'register finding (rejects un-pinned)',
+    'os_detect':            'magic-byte + dir-marker OS classification',
+    'magic_check':          'first-16-bytes signature probe',
 }
 for tier in (1, 2, 3):
     print()
@@ -726,6 +752,29 @@ _demo_stub() {
     local audit_log="${demo_dir}/output/audit.jsonl"
     export EVIDENCE_PATH="${demo_dir}/input"
     export OUTPUT_PATH="${demo_dir}/output"
+
+    # Anchor chain-of-custody: write manifest.json before any other audit
+    # event so `mh verify _demo` has something to re-hash against.
+    info "Step 1b: SHA256 manifest of collected artifacts"
+    PYTHONPATH="${MH_HOME}/orchestrator/src:${MH_HOME}/mcp-server/src" \
+        "$MH_PY" -c "
+from pathlib import Path
+from mh_orchestrator.nodes.manifest_ingest import build_manifest, write_manifest, manifest_self_sha256
+from protocol_sift_mcp.tools.audit import audit_append
+inp = Path('${demo_dir}/input')
+out = Path('${demo_dir}/output')
+entries = build_manifest(inp)
+mp = write_manifest(out, entries)
+audit_append(out / 'audit.jsonl', event='manifest_complete', data={
+    'input_dir': str(inp),
+    'manifest_path': str(mp),
+    'manifest_sha256': manifest_self_sha256(mp),
+    'entry_count': len(entries),
+    'errors': sum(1 for e in entries if 'error' in e),
+})
+print(f'    manifest.json: {len(entries)} entries, sha256 anchored in audit')
+"
+    ok "    manifest.json written"
 
     info "Step 2: ingest each artifact (compute sha256+sha1, append to audit log)"
     local ingested=0

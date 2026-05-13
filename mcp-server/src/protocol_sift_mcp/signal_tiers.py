@@ -37,21 +37,39 @@ SignalTier = Literal[1, 2, 3]
 # Single source of truth. Keep alphabetised within each tier for diff sanity.
 SIGNAL_TIERS: dict[str, SignalTier] = {
     # ─── Tier 1 — process tree, network state, persistence, credentials ────
-    "memory_volatility": 1,           # pslist/psscan/netscan/malfind/svcscan
+    "memory_volatility": 1,           # pslist/psscan/netscan/malfind/svcscan + 40 more
+    "memprocfs_findevil": 1,          # built-in evil-hunt heuristics over memory
+    "plaso_log2timeline": 1,          # super-timeline extraction (decision-driving)
+    "plaso_psort": 1,                 # rendered timeline = scoping artifact
     "win_evtx_query": 1,              # 4624/4625/4688/7045 = exec + auth + svc
     "win_registry_get": 1,            # Run/RunOnce/Services/AutoStart persistence
+    "yara_scan": 1,                   # IOC matching across files + memory
     # ─── Tier 2 — execution proof + recent-activity corroboration ──────────
+    "ez_amcacheparser": 2,            # AppCompat execution evidence
+    "ez_evtxecmd": 2,                 # bulk EVTX → CSV (faster than win_evtx_query)
+    "ez_mftecmd": 2,                  # full $MFT corroboration
+    "ez_recmd": 2,                    # registry batch plugins (ASEPs, USB, etc)
     "linux_history_parse": 2,         # bash/zsh = recent user commands
     "mac_knowledgec_query": 2,        # macOS recent-app + focus state
+    "tsk_fls": 2,                     # disk-image file listing
+    "tsk_icat": 2,                    # disk-image file extraction
+    "tsk_istat": 2,                   # inode metadata
+    "tsk_mactime": 2,                 # bodyfile-driven MACB timeline
+    "tsk_mmls": 2,                    # partition layout (routing)
+    "tshark_extract": 2,              # network field extraction
     "win_lnk_parse": 2,               # ShellBag-adjacent recent-doc pivots
     "win_prefetch_parse": 2,          # execution proof, lower freshness
+    "zeek_log_read": 2,               # Zeek connection logs
     # ─── Tier 3 — bulk/audit-grade primitives ──────────────────────────────
     "audit_append": 3,                # logging plumbing, not a finding source
+    "binwalk": 3,                     # firmware/embedded-file structure
+    "bulk_extractor": 3,              # IP/URL/email/CCN bulk carve
+    "finding_record": 3,              # registration plumbing, not a probe
     "hash": 3,                        # integrity, not signal
     "mac_plist_get": 3,               # bulk plist surface (most are config)
     "magic_check": 3,                 # routing primitive
     "os_detect": 3,                   # routing primitive
-    "finding_record": 3,              # registration plumbing, not a probe
+    "strings_extract": 3,             # bulk ASCII strings
 }
 
 
