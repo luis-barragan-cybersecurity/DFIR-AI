@@ -214,7 +214,7 @@ _MEMPROCFS_TIMEOUT = 1200  # 20 min cap on FindEvil scans
 def memprocfs_findevil(
     memory_path: str,
     *,
-    mount_point: str = "/tmp/memprocfs-mh",
+    mount_point: str = "/tmp/memprocfs-mh",  # noqa: S108 — intentional fixed mount path; caller can override
     timeout_sec: int = _MEMPROCFS_TIMEOUT,
 ) -> dict[str, Any]:
     """Run MemProcFS FindEvil over a memory image and return structured hits.
@@ -265,12 +265,15 @@ def memprocfs_findevil(
 
     # Best-effort unmount + terminate.
     try:
-        subprocess.run(["fusermount", "-u", str(mp)], capture_output=True, check=False, timeout=30)  # noqa: S607
-    except Exception:  # noqa: BLE001 — unmount is best-effort
+        subprocess.run(  # noqa: S603
+            ["fusermount", "-u", str(mp)],  # noqa: S607
+            capture_output=True, check=False, timeout=30,
+        )
+    except Exception:  # noqa: BLE001, S110 — unmount is best-effort; logging the error adds no value
         pass
     try:
         proc.terminate()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 — terminate is best-effort
         pass
 
     return {

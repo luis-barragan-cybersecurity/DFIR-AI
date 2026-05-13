@@ -57,9 +57,11 @@ def _scan_tail(log_path: Path) -> tuple[int, str]:
 
     try:
         last_entry = json.loads(last_line)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
         # Corrupt tail — refuse to extend rather than silently break the chain.
-        raise AuditChainError(f"audit log {log_path} has unparseable tail line")
+        raise AuditChainError(
+            f"audit log {log_path} has unparseable tail line"
+        ) from exc
     return n, _hash_entry(last_entry)
 
 

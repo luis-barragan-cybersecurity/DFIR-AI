@@ -322,7 +322,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "memory_path": {"type": "string", "description": "Memory image under /input"},
-                    "mount_point": {"type": "string", "default": "/tmp/memprocfs-mh"},
+                    "mount_point": {"type": "string", "default": "/tmp/memprocfs-mh"},  # noqa: S108
                     "timeout_sec": {"type": "integer", "default": 1200, "minimum": 60, "maximum": 7200},
                 },
                 "required": ["memory_path"],
@@ -666,7 +666,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         mres = memprocfs_findevil(
             arguments["memory_path"],
-            mount_point=arguments.get("mount_point", "/tmp/memprocfs-mh"),
+            mount_point=arguments.get("mount_point", "/tmp/memprocfs-mh"),  # noqa: S108
             timeout_sec=arguments.get("timeout_sec", 1200),
         )
         return [TextContent(type="text", text=json.dumps(mres, default=str))]
@@ -710,19 +710,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "plaso_psort":
         from .tools.timeline import psort
 
-        ps = psort(
+        psort_result = psort(
             arguments["storage_path"],
             output_format=arguments.get("output_format", "json_line"),
             output_path=arguments.get("output_path"),
             max_events=arguments.get("max_events", 200000),
         )
-        return [TextContent(type="text", text=json.dumps(ps, default=str))]
+        return [TextContent(type="text", text=json.dumps(psort_result, default=str))]
     if name == "ez_evtxecmd":
         from .tools.win_artifacts import evtxecmd
 
-        ev = evtxecmd(arguments["log_path"], arguments["output_dir"],
-                      max_rows=arguments.get("max_rows", 100000))
-        return [TextContent(type="text", text=json.dumps(ev, default=str))]
+        ez_result = evtxecmd(arguments["log_path"], arguments["output_dir"],
+                             max_rows=arguments.get("max_rows", 100000))
+        return [TextContent(type="text", text=json.dumps(ez_result, default=str))]
     if name == "ez_mftecmd":
         from .tools.win_artifacts import mftecmd
 
