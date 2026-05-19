@@ -522,6 +522,211 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="pcap_to_zeek",
+            description=(
+                "Distill a pcap into Zeek logs (conn.log, dns.log, http.log, ssl.log, "
+                "files.log, etc.) via `zeek -r`. Returns the list of produced log files."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pcap_path":  {"type": "string"},
+                    "output_dir": {"type": "string"},
+                },
+                "required": ["pcap_path", "output_dir"],
+            },
+        ),
+        Tool(
+            name="pcap_to_netflow",
+            description=(
+                "Distill a pcap into NetFlow v5 records via `nfpcapd -r ... -l`. "
+                "Returns produced nfcapd.* files for downstream nfdump_query."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pcap_path":  {"type": "string"},
+                    "output_dir": {"type": "string"},
+                },
+                "required": ["pcap_path", "output_dir"],
+            },
+        ),
+        Tool(
+            name="pcap_to_passivedns",
+            description=(
+                "Distill a pcap into PassiveDNS log entries via `passivedns -r ... -l`. "
+                "Output is a single passivedns.log file under output_dir."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pcap_path":  {"type": "string"},
+                    "output_dir": {"type": "string"},
+                },
+                "required": ["pcap_path", "output_dir"],
+            },
+        ),
+        Tool(
+            name="pcap_info",
+            description=(
+                "Run `capinfos` on a pcap and return the parsed summary "
+                "(packet count, time window, file size, hash, etc.)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {"pcap_path": {"type": "string"}},
+                "required": ["pcap_path"],
+            },
+        ),
+        Tool(
+            name="pcap_slice_time",
+            description=(
+                "Slice a pcap by time window via `editcap -A start -B end`. "
+                "Timestamps accepted in ISO-8601 or editcap's space-separated form."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pcap_path":   {"type": "string"},
+                    "start_time":  {"type": "string"},
+                    "end_time":    {"type": "string"},
+                    "output_path": {"type": "string"},
+                },
+                "required": ["pcap_path", "start_time", "end_time", "output_path"],
+            },
+        ),
+        Tool(
+            name="pcap_merge",
+            description=(
+                "Merge multiple pcaps chronologically via `mergecap -w`. "
+                "Each input is sandbox-asserted under /input."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pcap_list":   {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "output_path": {"type": "string"},
+                },
+                "required": ["pcap_list", "output_path"],
+            },
+        ),
+        Tool(
+            name="pcap_filter_bpf",
+            description=(
+                "Filter a pcap with a validated BPF string via `tcpdump -r ... -w ...`. "
+                "Shell metacharacters are rejected at the boundary."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pcap_path":   {"type": "string"},
+                    "bpf":         {"type": "string"},
+                    "output_path": {"type": "string"},
+                },
+                "required": ["pcap_path", "bpf", "output_path"],
+            },
+        ),
+        Tool(
+            name="tcp_reassemble",
+            description=(
+                "Reassemble TCP streams to per-flow files via `tcpflow -o <dir> -r <pcap>`. "
+                "Each output file is one flow direction."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pcap_path":  {"type": "string"},
+                    "output_dir": {"type": "string"},
+                },
+                "required": ["pcap_path", "output_dir"],
+            },
+        ),
+        Tool(
+            name="nfdump_query",
+            description=(
+                "Query NetFlow records via `nfdump -r`. Supports aggregation (-A), output "
+                "format (csv|line|long|extended|json|raw), top-N (-c), and BPF filter."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "nfcapd_path":   {"type": "string"},
+                    "bpf_filter":    {"type": "string"},
+                    "aggregation":   {"type": "string"},
+                    "output_format": {"type": "string", "default": "csv"},
+                    "top_n":         {"type": "integer"},
+                },
+                "required": ["nfcapd_path"],
+            },
+        ),
+        Tool(
+            name="beacon_score",
+            description=(
+                "Periodicity score for (src, dst, dport) tuples in a Zeek conn.log — "
+                "ranks timing-regular streams (FOR572 'Periodic Traffic Volume' approximation). "
+                "Composite of CV + Shannon entropy + count. Not a definitive C2 detector — "
+                "jittered C2 (Cobalt Strike, Sliver) defeats 1-D timing analysis; treat as "
+                "analyst triage list, not verdict."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "conn_log_path":   {"type": "string"},
+                    "dst_filter":      {"type": "string"},
+                    "min_connections": {"type": "integer", "default": 8},
+                    "top_n":           {"type": "integer", "default": 50},
+                },
+                "required": ["conn_log_path"],
+            },
+        ),
+        Tool(
+            name="conn_top_talkers",
+            description=(
+                "Top-k (src, dst) pairs from conn.log ranked by 'bytes' | 'connections' | "
+                "'duration'. Pure-Python analytic over already-parsed Zeek log."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "conn_log_path": {"type": "string"},
+                    "k":             {"type": "integer", "default": 20},
+                    "by":            {"type": "string", "default": "bytes",
+                                       "enum": ["bytes", "connections", "duration"]},
+                },
+                "required": ["conn_log_path"],
+            },
+        ),
+        Tool(
+            name="dns_summarize",
+            description=(
+                "Aggregate dns.log into top queries, qtypes, NXDOMAIN counts/top, and "
+                "unique resolver count."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dns_log_path": {"type": "string"},
+                    "k":            {"type": "integer", "default": 20},
+                },
+                "required": ["dns_log_path"],
+            },
+        ),
+        Tool(
+            name="http_ua_profile",
+            description=(
+                "Profile http.log: top user-agents, method distribution, status code "
+                "distribution, top hosts/URIs, URIs ending in PE-like suffixes."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "http_log_path": {"type": "string"},
+                    "k":             {"type": "integer", "default": 20},
+                },
+                "required": ["http_log_path"],
+            },
+        ),
+        Tool(
             name="bulk_extractor",
             description=(
                 "bulk_extractor — pull IPs/URLs/emails/CCN patterns from any blob. "
@@ -755,6 +960,91 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         zk = zeek_log_read(arguments["log_path"], max_rows=arguments.get("max_rows", 100000))
         return [TextContent(type="text", text=json.dumps(zk, default=str))]
+    if name == "pcap_to_zeek":
+        from .tools.network import pcap_to_zeek
+
+        r = pcap_to_zeek(arguments["pcap_path"], arguments["output_dir"])
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "pcap_to_netflow":
+        from .tools.network import pcap_to_netflow
+
+        r = pcap_to_netflow(arguments["pcap_path"], arguments["output_dir"])
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "pcap_to_passivedns":
+        from .tools.network import pcap_to_passivedns
+
+        r = pcap_to_passivedns(arguments["pcap_path"], arguments["output_dir"])
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "pcap_info":
+        from .tools.network import pcap_info
+
+        r = pcap_info(arguments["pcap_path"])
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "pcap_slice_time":
+        from .tools.network import pcap_slice_time
+
+        r = pcap_slice_time(
+            arguments["pcap_path"], arguments["start_time"],
+            arguments["end_time"], arguments["output_path"],
+        )
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "pcap_merge":
+        from .tools.network import pcap_merge
+
+        r = pcap_merge(arguments["pcap_list"], arguments["output_path"])
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "pcap_filter_bpf":
+        from .tools.network import pcap_filter_bpf
+
+        r = pcap_filter_bpf(
+            arguments["pcap_path"], arguments["bpf"], arguments["output_path"],
+        )
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "tcp_reassemble":
+        from .tools.network import tcp_reassemble
+
+        r = tcp_reassemble(arguments["pcap_path"], arguments["output_dir"])
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "nfdump_query":
+        from .tools.network import nfdump_query
+
+        r = nfdump_query(
+            arguments["nfcapd_path"],
+            bpf_filter=arguments.get("bpf_filter"),
+            aggregation=arguments.get("aggregation"),
+            output_format=arguments.get("output_format", "csv"),
+            top_n=arguments.get("top_n"),
+        )
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "beacon_score":
+        from .tools.network_analytics import beacon_score
+
+        r = beacon_score(
+            arguments["conn_log_path"],
+            dst_filter=arguments.get("dst_filter"),
+            min_connections=arguments.get("min_connections", 8),
+            top_n=arguments.get("top_n", 50),
+        )
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "conn_top_talkers":
+        from .tools.network_analytics import conn_top_talkers
+
+        r = conn_top_talkers(
+            arguments["conn_log_path"],
+            k=arguments.get("k", 20),
+            by=arguments.get("by", "bytes"),
+        )
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "dns_summarize":
+        from .tools.network_analytics import dns_summarize
+
+        r = dns_summarize(arguments["dns_log_path"], k=arguments.get("k", 20))
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
+    if name == "http_ua_profile":
+        from .tools.network_analytics import http_ua_profile
+
+        r = http_ua_profile(arguments["http_log_path"], k=arguments.get("k", 20))
+        return [TextContent(type="text", text=json.dumps(r, default=str))]
     if name == "bulk_extractor":
         from .tools.carving import bulk_extractor
 

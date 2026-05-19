@@ -378,6 +378,44 @@ install_apt_prereqs() {
             forensics_log+="    → will install tshark\n"
         fi
 
+        # Phase 3a network forensics — capinfos/editcap/mergecap come from
+        # wireshark-common. tshark usually pulls it transitively but request
+        # it explicitly so the wrappers (pcap_info, pcap_slice_time, pcap_merge)
+        # always have their binaries.
+        if command -v capinfos >/dev/null 2>&1 \
+            && command -v editcap >/dev/null 2>&1 \
+            && command -v mergecap >/dev/null 2>&1; then
+            forensics_log+="    ✓ wireshark-common (capinfos/editcap/mergecap) already present\n"
+        else
+            forensics_missing+=("wireshark-common")
+            forensics_log+="    → will install wireshark-common (capinfos/editcap/mergecap)\n"
+        fi
+
+        # Phase 3a — tcpdump backs pcap_filter_bpf (BPF-filter pcap-to-pcap).
+        if command -v tcpdump >/dev/null 2>&1; then
+            forensics_log+="    ✓ tcpdump already present\n"
+        else
+            forensics_missing+=("tcpdump")
+            forensics_log+="    → will install tcpdump (pcap_filter_bpf wrapper)\n"
+        fi
+
+        # Phase 3a — tcpflow backs tcp_reassemble (TCP-stream-to-files).
+        if command -v tcpflow >/dev/null 2>&1; then
+            forensics_log+="    ✓ tcpflow already present\n"
+        else
+            forensics_missing+=("tcpflow")
+            forensics_log+="    → will install tcpflow (tcp_reassemble wrapper)\n"
+        fi
+
+        # Phase 3a — nfdump package provides BOTH nfdump (query) and nfpcapd
+        # (pcap→NetFlow converter). Backs pcap_to_netflow + nfdump_query.
+        if command -v nfdump >/dev/null 2>&1 && command -v nfpcapd >/dev/null 2>&1; then
+            forensics_log+="    ✓ nfdump (nfdump + nfpcapd) already present\n"
+        else
+            forensics_missing+=("nfdump")
+            forensics_log+="    → will install nfdump (provides nfdump + nfpcapd for NetFlow)\n"
+        fi
+
         if command -v binwalk >/dev/null 2>&1; then
             forensics_log+="    ✓ binwalk already present\n"
         else
@@ -404,6 +442,15 @@ install_apt_prereqs() {
         if ! command -v bulk_extractor >/dev/null 2>&1; then
             run_root apt-get install -y --no-install-recommends bulk-extractor 2>/dev/null \
                 || warn "bulk-extractor not in default repos — manual: https://github.com/simsong/bulk_extractor"
+        fi
+        # Phase 3a — passivedns: not in default apt; build-from-source or
+        # use Suricata's dns.log as a substitute. The pcap_to_passivedns
+        # wrapper raises a typed error with this exact hint at runtime, so
+        # we keep this as a non-fatal note.
+        if ! command -v passivedns >/dev/null 2>&1; then
+            warn "passivedns not in apt — pcap_to_passivedns wrapper will be unavailable until you:"
+            warn "  1. Build from source: github.com/gamelinux/passivedns"
+            warn "  2. OR use Suricata's dns.log (apt install suricata) as a workflow substitute"
         fi
     fi
 }
@@ -476,6 +523,13 @@ install_dnf_prereqs() {
         command -v fls >/dev/null 2>&1 || forensics_missing+=("sleuthkit")
         command -v tshark >/dev/null 2>&1 || forensics_missing+=("wireshark-cli")
         command -v binwalk >/dev/null 2>&1 || forensics_missing+=("binwalk")
+        # Phase 3a network forensics extras (Fedora/RHEL)
+        (command -v capinfos >/dev/null 2>&1 && command -v editcap >/dev/null 2>&1 \
+            && command -v mergecap >/dev/null 2>&1) || forensics_missing+=("wireshark-cli")
+        command -v tcpdump >/dev/null 2>&1 || forensics_missing+=("tcpdump")
+        command -v tcpflow >/dev/null 2>&1 || forensics_missing+=("tcpflow")
+        (command -v nfdump >/dev/null 2>&1 && command -v nfpcapd >/dev/null 2>&1) \
+            || forensics_missing+=("nfdump")
         if (( ${#forensics_missing[@]} == 0 )); then
             ok "all forensics DNF prereqs already installed"
         else
@@ -599,6 +653,32 @@ install_brew_prereqs() {
             forensics_log+="    → will brew install binwalk\n"
         fi
 
+        # Phase 3a — macOS: brew `wireshark` ships capinfos/editcap/mergecap/tshark
+        # together; checking tshark above is enough but probe explicitly for the
+        # other binaries in case someone installed a stripped-down formula.
+        if command -v capinfos >/dev/null 2>&1 \
+            && command -v editcap >/dev/null 2>&1 \
+            && command -v mergecap >/dev/null 2>&1; then
+            forensics_log+="    ✓ capinfos/editcap/mergecap already present\n"
+        elif ! [[ " ${forensics_missing[*]} " == *" wireshark "* ]]; then
+            forensics_missing+=("wireshark")
+            forensics_log+="    → will brew install wireshark (provides capinfos/editcap/mergecap)\n"
+        fi
+
+        if command -v tcpflow >/dev/null 2>&1; then
+            forensics_log+="    ✓ tcpflow already present\n"
+        else
+            forensics_missing+=("tcpflow")
+            forensics_log+="    → will brew install tcpflow (tcp_reassemble wrapper)\n"
+        fi
+
+        if command -v nfdump >/dev/null 2>&1 && command -v nfpcapd >/dev/null 2>&1; then
+            forensics_log+="    ✓ nfdump (nfdump + nfpcapd) already present\n"
+        else
+            forensics_missing+=("nfdump")
+            forensics_log+="    → will brew install nfdump (NetFlow query + pcap→nfcapd)\n"
+        fi
+
         echo -en "$forensics_log"
 
         if (( ${#forensics_missing[@]} == 0 )); then
@@ -614,6 +694,14 @@ install_brew_prereqs() {
         if ! command -v bulk_extractor >/dev/null 2>&1; then
             warn "bulk_extractor not in core Homebrew"
             warn "  optional manual install: https://github.com/simsong/bulk_extractor#installing"
+        fi
+
+        # Phase 3a — passivedns not in core Homebrew either. pcap_to_passivedns
+        # wrapper raises a clear typed error with build instructions at runtime.
+        if ! command -v passivedns >/dev/null 2>&1; then
+            warn "passivedns not in core Homebrew — pcap_to_passivedns will be unavailable until you:"
+            warn "  1. Build from source: github.com/gamelinux/passivedns"
+            warn "  2. OR use Suricata's dns.log as a workflow substitute (brew install suricata)"
         fi
     fi
 
