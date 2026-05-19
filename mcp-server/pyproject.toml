@@ -36,6 +36,9 @@ forensics = [
     "yara-python>=4.5.0",
     "windowsprefetch>=0.3",
     "pylnk3>=0.4",
+    # ESE database parser for win_ese_query (SRUDB.dat, WebCacheV01.dat,
+    # Windows.edb). Pure-Python; no native deps.
+    "dissect.esedb>=3.0",
 ]
 reports = [
     # Optional — enables `mh report --pdf <case>` via WeasyPrint.
