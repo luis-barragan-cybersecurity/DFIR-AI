@@ -15,13 +15,13 @@ Submission to the [SANS FIND EVIL!](https://findevil.devpost.com) Hackathon (Apr
 |---|---|
 | **What** | Autonomous IR triage agent — drop evidence, get a pinned forensic report |
 | **How** | Custom MCP server + Claude Code skills/agents/hooks + LangGraph state machine |
-| **Surface** | 30+ typed forensic tools across 8 SIFT categories · 13 skills · 4 specialist subagents · 5 lifecycle hooks · 18-node IR graph + correlator |
+| **Surface** | 31 typed forensic tools across 13 modules · 14 skills · 4 specialist subagents · 5 lifecycle hooks · 20-node IR graph (14 IR + `session_init` + `session_finalize` + `suppress` + `correlate` + `manifest_ingest` + `scope`) |
 | **OS coverage** | Windows (registry, EVTX, Prefetch, LNK, MFT, Amcache via EZ Tools), macOS (plist, KnowledgeC), Linux (shell history, journald, audit), Memory (Volatility 3 — 45+ plugins; MemProcFS FindEvil), Disk (Sleuth Kit — fls/icat/mmls/mactime/istat), Timeline (Plaso log2timeline + psort), Network (tshark, Zeek), Malware/Carving (YARA, bulk_extractor, binwalk, strings) |
 | **Frameworks** | NIST CSF 2.0 · ISO/IEC 27035-1:2023 · SANS PICERL · MITRE ATT&CK · D3FEND |
 | **Trust** | Schema-rejected un-pinned findings · independent Verifier subagent with self-correction loop · cross-finding Correlator · **sha256-chained audit log** · **SHA256 manifest at ingest** · `mh verify` spoliation re-check |
-| **Deploy** | Pre-built Docker · Local Docker build · Host install (SIFT/Ubuntu) |
+| **Deploy** | One-line installer (`bash scripts/install.sh`) · Host install · Docker (advanced — see [`docs/deployment.md`](docs/deployment.md)) |
 | **Auth** | Pro/Max subscription · Anthropic API key · Bedrock · Vertex |
-| **Code** | ~12K LoC Python · 50+ test files · 389 tests passing · CI green |
+| **Code** | ~10K LoC Python · 58 test files · 360 tests · CI green |
 | **Demo video** | _Recording in W6 (May 31 – Jun 6, 2026) — link added on upload._ Must show verifier dissent → re-analyze self-correction (per hackathon rules). |
 
 ---
@@ -48,66 +48,40 @@ Two execution modes with the same trust contract:
 
 ## Quickstart
 
-Three deployment paths — pick one. Full details in [`docs/deployment.md`](docs/deployment.md).
-
-### Path 1 — Pre-built Docker (no build, fastest)
-
-```bash
-docker pull ghcr.io/saivarun3407/memoryhound:sub-plan-05-complete
-docker run --rm \
-    -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-    -v "$PWD/cases:/work/cases" \
-    ghcr.io/saivarun3407/memoryhound:sub-plan-05-complete \
-    orchestrate <case-id>
-```
-
-### Path 2 — Local Docker build
+One command from a freshly cloned repo to a working install:
 
 ```bash
 git clone https://github.com/saivarun3407/DFIR-AI.git memoryhound && cd memoryhound
-docker compose build && docker compose run --rm memoryhound orchestrate <case-id>
+bash scripts/install.sh
 ```
 
-The compose file ships two services (`Dockerfile` + `docker-compose.yml`):
+The installer checks Python 3.11+, checks the `claude` CLI, then runs `bin/mh init` (creates `.venv`, installs deps). It surfaces missing system packages with the exact `brew`/`apt` command to fix them — it never installs anything for you silently.
 
-- `memoryhound` — needs `ANTHROPIC_API_KEY`
-- `memoryhound-claude-mount` (profile `claude-mount`) — bind-mounts `~/.claude` read-only so judges who already ran `claude /login` can skip API-key setup
-
-### Path 3 — Host install (SIFT or Ubuntu 22.04)
+Once installed, sign in to Claude Code (one-time) and run the quickstart:
 
 ```bash
-git clone https://github.com/saivarun3407/DFIR-AI.git memoryhound && cd memoryhound
-bash scripts/install-sift.sh --install --with-forensics --with-symbols
-./bin/mh demo
-```
-
-### Local Development
-
-```bash
-# 1. Clone + install (one time)
-git clone https://github.com/saivarun3407/DFIR-AI.git memoryhound && cd memoryhound
-./bin/mh init                     # creates .venv, installs deps
-./bin/mh doctor                   # confirms env is healthy
-
-# 2. Choose your auth (one time)
-claude /login                     # subscription
+claude /login                     # Pro/Max subscription (recommended)
 # OR
 export ANTHROPIC_API_KEY=sk-ant-...   # API key
 
-# 3. Drop evidence + run triage
+./bin/mh quickstart               # auth check + stub demo (no tokens spent)
+```
+
+After `mh quickstart` finishes, you're ready for real evidence:
+
+```bash
 mkdir -p cases/case-001/input
 cp /path/to/evidence/* cases/case-001/input/
-./bin/mh run case-001             # skill-driven (free-form)
+./bin/mh run case-001             # skill-driven (free-form Claude Code session)
 # OR
-./bin/mh orchestrate case-001     # LangGraph (deterministic)
+./bin/mh orchestrate case-001     # LangGraph (deterministic state machine)
 
-# 4. Prove chain-of-custody — re-hash input vs manifest, re-verify audit chain
-./bin/mh verify case-001          # exit 0 if no spoliation; non-zero on any break
-
-# 5. Browse the results
-./bin/mh serve                    # http://127.0.0.1:8765/
+./bin/mh verify case-001          # chain-of-custody re-hash; exit 0 on no spoliation
+./bin/mh serve                    # browse results at http://127.0.0.1:8765/
 ./bin/mh report --exec case-001   # one-page executive report
 ```
+
+> Need a containerized run, a SIFT/Ubuntu host bootstrap with the full forensics toolchain, or the prebuilt image? See [`docs/deployment.md`](docs/deployment.md).
 
 ---
 
@@ -152,7 +126,7 @@ Output:
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  CLI WRAPPER          bin/mh                                      │
-│  Bash dispatcher with 11 subcommands; manages venv + auth +       │
+│  Bash dispatcher with 14 subcommands; manages venv + auth +       │
 │  fresh-cycle output reset; shells out to claude or mh-orchestrate │
 └─────────────┬───────────────────────────────────┬─────────────────┘
               │                                   │
@@ -179,7 +153,7 @@ Output:
                             ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  CUSTOM MCP SERVER     mcp-server/src/protocol_sift_mcp/         │
-│  ─ stdio protocol; 13 typed tools across 8 modules               │
+│  ─ stdio protocol; 31 typed tools across 13 modules              │
 │  ─ schema-rejects findings without pins (finding.py)             │
 │  ─ path-escape sandbox (sandbox.py); evidence read-only          │
 │  ─ writes audit.jsonl + findings.json directly                   │
@@ -199,7 +173,7 @@ Output:
 | | **`mh run`** (skill-driven) | **`mh orchestrate`** (LangGraph) |
 |---|---|---|
 | Driver | `triage-orchestrator` skill in a Claude Code session | `mh-orchestrate run` invoking compiled `StateGraph` |
-| Determinism | Free-form within the skill spec | 17 nodes, 6 typed conditional edges |
+| Determinism | Free-form within the skill spec | 20 nodes, 6 typed conditional edges |
 | Output deliverables | 4 files (audit, findings, narrative, accuracy-report) | 10 §11.4 files (state, history, audit, agent_messages, containment, recovery, lessons, remediation, compliance, summary) |
 | LLM calls | All triage steps | Only `ClaudeNode` calls; deterministic nodes are pure Python |
 | Stub mode | n/a | `MH_NO_CLAUDE=1` short-circuits LLM nodes |
@@ -208,7 +182,7 @@ Output:
 
 ### LangGraph Topology
 
-The orchestrator implements the §11.2 14-IR-node topology from `Plans/IR_FRAMEWORKS_REFERENCE.md`, plus `session_init`, `session_finalize`, and the `suppress` false-positive path (17 total). Six conditional edges (§11.3) govern branching and bounded loops.
+The orchestrator implements the §11.2 14-IR-node topology from `Plans/IR_FRAMEWORKS_REFERENCE.md`, plus `session_init`, `session_finalize`, `suppress` (false-positive path), `correlate` (cross-finding linker after `verifier_pass`), `manifest_ingest` (chain-of-custody manifest), and `scope` (multi-host scoping) — **20 nodes total**. Six conditional edges (§11.3) govern branching and bounded loops.
 
 ```mermaid
 flowchart TD
@@ -299,20 +273,25 @@ Confidence enum (`triage-orchestrator/SKILL.md`):
 - **`uncertain`** — observation suggestive but not conclusive
 - **`unknown`** — explicit gap; pinned, never guessed
 
-### MCP Tool Surface (13 tools, 8 modules)
+### MCP Tool Surface (31 tools, 13 modules)
 
 `mcp-server/src/protocol_sift_mcp/tools/` ([source](mcp-server/src/protocol_sift_mcp/tools/)):
 
 | Module | Tools | Purpose |
 |--------|-------|---------|
-| `audit.py` | `audit_append`, `agent_message_append` | Append-only event log |
+| `audit.py` | `audit_append` | Append-only event log |
 | `evidence.py` | `hash` | sha256 + sha1 + size of any artifact |
 | `finding.py` | `finding_record` | Schema-validated pinned findings (rejects un-pinned) |
 | `parse.py` | `os_detect`, `magic_check` | Cross-OS routing primitives |
-| `windows.py` | `win_registry_get`, `win_prefetch_parse`, `win_evtx_query`, `win_lnk_parse` | FOR500-aligned Windows triage |
+| `windows.py` | `win_registry_get`, `win_prefetch_parse`, `win_evtx_query`, `win_lnk_parse` | FOR500-aligned native Windows triage |
+| `win_artifacts.py` | `ez_evtxecmd`, `ez_mftecmd`, `ez_recmd`, `ez_amcacheparser` | EZ Tools wrappers (EVTX, MFT, registry, Amcache) |
 | `macos.py` | `mac_plist_get`, `mac_knowledgec_query` | FOR518-aligned macOS triage |
 | `linux.py` | `linux_history_parse` | Bash + zsh history (FOR577) |
-| `memory.py` | `memory_volatility` | Volatility 3 windows.* / mac.* / linux.* (11-plugin allowlist) |
+| `memory.py` | `memory_volatility`, `memprocfs_findevil` | Volatility 3 (11-plugin allowlist) + MemProcFS FindEvil |
+| `filesystem.py` | `tsk_fls`, `tsk_icat`, `tsk_mmls`, `tsk_mactime`, `tsk_istat` | The Sleuth Kit — file listing, content extract, partition map, timeline, inode stat |
+| `timeline.py` | `plaso_log2timeline`, `plaso_psort` | Plaso super-timeline build + sort |
+| `network.py` | `tshark_extract`, `zeek_log_read` | tshark protocol extract, Zeek log reader |
+| `carving.py` | `yara_scan`, `bulk_extractor`, `binwalk`, `strings_extract` | Malware/carving — YARA rule scan, bulk_extractor, binwalk, strings |
 
 ### Claude Code Layer
 
@@ -320,7 +299,7 @@ Confidence enum (`triage-orchestrator/SKILL.md`):
 
 | Surface | Count | Files |
 |---------|-------|-------|
-| Skills | 13 | `triage-orchestrator`, `windows-triage`, `macos-triage`, `linux-triage`, `memory-forensics`, `evidence-pin`, `gap-acknowledgment`, `self-correct`, `ir-narrative`, `accuracy-report`, `containment-recommender`, `remediation-planner`, `threat-hunting` |
+| Skills | 14 | `triage-orchestrator`, `windows-triage`, `macos-triage`, `linux-triage`, `memory-forensics`, `evidence-pin`, `gap-acknowledgment`, `self-correct`, `ir-narrative`, `accuracy-report`, `exec-report`, `containment-recommender`, `remediation-planner`, `threat-hunting` |
 | Subagents | 4 | `WindowsAgent`, `MacOSAgent`, `LinuxAgent`, `Verifier` |
 | Hooks | 5 | `session-start.sh` (ingest+hash), `inject-context.sh` (UserPromptSubmit), `guard.sh` (PreToolUse trust gate), `audit.sh` (PostToolUse log), `finalize.sh` (Stop summary) |
 | Permissions | — | `allow: mcp__protocol_sift__*, Read, Glob, Grep` · `deny: Bash, WebFetch, WebSearch, Edit, Write, mcp__filesystem__write_*` |
