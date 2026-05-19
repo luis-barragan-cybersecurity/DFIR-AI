@@ -294,55 +294,149 @@ cmd_init() {
 
 # ─── run ─────────────────────────────────────────────────────────────────────
 
+# cmd_run: ONE command for full IR triage.
+#
+# Argument can be:
+#   - A case name (mh run case-001)         → uses cases/case-001/input/
+#   - A file path (mh run /tmp/dump.raw)    → auto-creates cases/<derived>/input/,
+#                                              copies/symlinks the file
+#   - A folder path (mh run /tmp/evidence/) → auto-creates cases/<derived>/input/,
+#                                              copies/symlinks every file inside
+#
+# Mode:
+#   - Default: LangGraph state machine (deterministic IR pipeline — uses skills,
+#     subagents, verifier loop, correlator, CSF/ISO/PICERL framework mapping).
+#   - --interactive: skill-driven free-form Claude Code TUI (live tool calls
+#     visible — for exploratory casework).
+#
+# After triage completes the function prints:
+#   - Path to all artifacts (findings.json, narrative.md, accuracy-report.md,
+#     audit.jsonl, manifest.json, etc.)
+#   - The exact `mh serve` and `mh report` commands to browse them
+#
+# Auto-starting `mh serve` in background would create a process the user can't
+# easily kill — surfacing the command is cleaner.
+
 cmd_run() {
-    local case_id="${1:-}"
-    if [[ -z "$case_id" ]]; then
-        fail "Usage: mh run <case-id>"
-        echo "       Evidence must live at cases/<case-id>/input/"
+    local arg="${1:-}"
+    local interactive=0
+    local extra_args=()
+
+    # Parse flags. First positional that isn't a flag is the case argument.
+    if [[ -z "$arg" || "$arg" == "-h" || "$arg" == "--help" ]]; then
+        cat <<EOF
+Usage: mh run <case-name|file-path|folder-path> [--interactive]
+
+  case name      mh run case-001                 # uses cases/case-001/input/
+  file path      mh run /Downloads/memory.raw    # wraps file in a new case
+  folder path    mh run /Downloads/evidence/     # wraps folder in a new case
+
+  --interactive  Skill-driven Claude TUI (live tool calls). Default is
+                 the deterministic LangGraph pipeline.
+
+  -h, --help     This help.
+
+The pipeline (default mode) covers everything: SHA256 manifest, ingest,
+OS detection, skill routing, subagent triage (Windows/macOS/Linux),
+Volatility memory analysis, Verifier dissent loop, MITRE ATT&CK tagging,
+NIST CSF 2.0 / ISO 27035 / PICERL framework mapping, D3FEND
+countermeasure recommendations, containment + remediation plans,
+investigator narrative, accuracy report, and a sha256-chained audit log.
+EOF
+        return 0
+    fi
+    shift
+    while (( $# > 0 )); do
+        case "$1" in
+            --interactive|-i) interactive=1; shift ;;
+            *)                extra_args+=("$1"); shift ;;
+        esac
+    done
+
+    # ─── Resolve case_id from arg (name vs file vs folder) ────────────────
+    local case_id=""
+    local input_dir=""
+    local copy_source=""
+
+    if [[ -e "$arg" ]] && [[ "$arg" != "${arg#/}" || "$arg" == ./* || "$arg" == ~* ]]; then
+        # Looks like a path (absolute, ./relative, or ~-expanded). Auto-wrap.
+        local abs_path
+        abs_path="$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")"
+        local stem
+        stem="$(basename "$arg")"
+        # Strip trailing slash from folder names, then strip extension from
+        # files. Final case_id is a friendly slug.
+        stem="${stem%/}"
+        case_id="${stem%.*}"
+        case_id="${case_id//[^a-zA-Z0-9._-]/-}"
+        if [[ -z "$case_id" ]]; then
+            case_id="case-$(date +%Y%m%d-%H%M%S)"
+        fi
+        copy_source="$abs_path"
+        info "auto-wrapping path as case: ${case_id}"
+        info "  source: ${abs_path}"
+    elif [[ -d "${MH_CASES_DIR}/${arg}/input" ]] || [[ "$arg" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        # Treat as case name. Either the input/ dir already exists (existing
+        # case) or the arg is a clean slug (new empty case the user wants
+        # to scaffold).
+        case_id="$arg"
+    else
+        fail "argument '$arg' is neither an existing path nor a valid case name"
+        info "  case names: letters/digits/dash/underscore/dot only"
+        info "  paths: must exist on disk (file or folder)"
         return 2
     fi
 
     local case_dir="${MH_CASES_DIR}/${case_id}"
-    local input_dir="${case_dir}/input"
+    input_dir="${case_dir}/input"
     local output_dir="${case_dir}/output"
+    mkdir -p "$input_dir"
 
-    if [[ ! -d "$input_dir" ]]; then
-        fail "No evidence at ${input_dir}"
-        info "Drop files into ${input_dir}/ then re-run."
+    # ─── If we auto-wrapped a path, copy/symlink it into input/ ───────────
+    if [[ -n "$copy_source" ]]; then
+        if [[ -f "$copy_source" ]]; then
+            info "copying $(basename "$copy_source") → ${input_dir}/"
+            cp -n "$copy_source" "${input_dir}/" || warn "file already in input/ — keeping existing"
+        elif [[ -d "$copy_source" ]]; then
+            info "copying contents of $(basename "$copy_source")/ → ${input_dir}/"
+            # -n: no-clobber. -R: recursive. -L: follow symlinks. Trailing /. is
+            # rsync-style for "copy contents not the dir itself".
+            cp -Rn -L "$copy_source"/. "${input_dir}/" 2>/dev/null || true
+        fi
+    fi
+
+    if [[ -z "$(ls -A "$input_dir" 2>/dev/null | grep -v '^.gitkeep$')" ]]; then
+        fail "${input_dir} has no evidence files"
+        info "  drop files into ${input_dir}/ then re-run, OR"
+        info "  rerun with a path argument: mh run /path/to/evidence"
         return 2
     fi
 
-    if [[ -z "$(ls -A "$input_dir" 2>/dev/null)" ]]; then
-        warn "${input_dir} is empty"
-        return 2
+    # ─── Auth + claude CLI gates ──────────────────────────────────────────
+    if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ ! -d "$HOME/.claude" ]]; then
+        fail "no Claude auth. Run: claude /login   OR   export ANTHROPIC_API_KEY=sk-ant-..."
+        return 1
+    fi
+    if ! command -v claude >/dev/null 2>&1; then
+        fail "claude CLI not installed"
+        info "  install: https://docs.claude.com/en/docs/claude-code/quickstart"
+        return 1
     fi
 
-    # Fresh cycle: every investigation starts with a clean output dir so
-    # findings.json / narrative.md / audit.jsonl never carry state from a
-    # prior run.
+    # ─── Fresh-cycle output dir ───────────────────────────────────────────
     if [[ -d "$output_dir" ]] && [[ -n "$(ls -A "$output_dir" 2>/dev/null)" ]]; then
-        info "Resetting prior output for fresh cycle"
+        info "resetting prior output for fresh cycle"
     fi
     rm -rf "$output_dir"
     mkdir -p "$output_dir"
 
-    if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ ! -d "$HOME/.claude" ]]; then
-        fail "No Claude auth. Set ANTHROPIC_API_KEY or run: claude /login"
-        return 1
-    fi
-
-    if ! command -v claude >/dev/null 2>&1; then
-        fail "claude CLI not installed"
-        return 1
-    fi
-
-    info "Case: ${case_id}"
-    info "Evidence: ${input_dir}"
-    info "Output:   ${output_dir}"
+    info "case:       ${case_id}"
+    info "evidence:   ${input_dir}"
+    info "output:     ${output_dir}"
     if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        info "Auth: API key"
+        info "auth:       API key"
     else
-        info "Auth: Claude subscription (Pro/Max)"
+        info "auth:       Claude subscription (Pro/Max)"
     fi
 
     export CASE_ID="$case_id"
@@ -350,46 +444,55 @@ cmd_run() {
     export OUTPUT_PATH="$output_dir"
     export MH_HOME
 
-    info "Launching Claude Code with triage-orchestrator skill"
     cd "$MH_HOME"
-    claude_run "Use the triage-orchestrator skill to autonomously triage every artifact under ${input_dir}. Route to the correct OS specialist. Pin every finding. Acknowledge gaps explicitly. Stop when triage is complete. Write findings.json, narrative.md, and accuracy-report.md to ${output_dir}."
+
+    # ─── Dispatch to the chosen execution mode ────────────────────────────
+    local rc=0
+    if (( interactive )); then
+        info "mode:       interactive (skill-driven Claude TUI)"
+        echo ""
+        claude_run "Use the triage-orchestrator skill to autonomously triage every artifact under ${input_dir}. Route to the correct OS specialist (Windows/macOS/Linux). Pin every finding to its source tool + artifact. Acknowledge gaps explicitly via gap-acknowledgment. Stop when triage is complete. Write findings.json, narrative.md, and accuracy-report.md to ${output_dir}." || rc=$?
+    else
+        info "mode:       LangGraph (deterministic full IR pipeline)"
+        echo ""
+        if [[ ! -x "${MH_VENV}/bin/mh-orchestrate" ]]; then
+            fail "mh-orchestrate not installed. Run: mh init"
+            return 1
+        fi
+        "${MH_VENV}/bin/mh-orchestrate" run "$case_id" --cases-dir "$MH_CASES_DIR" "${extra_args[@]}" || rc=$?
+    fi
+
+    # ─── Surface results regardless of exit code ──────────────────────────
+    echo ""
+    if (( rc == 0 )); then
+        ok "triage complete."
+    else
+        warn "triage exited with code $rc — partial results may still be present"
+    fi
+
+    echo ""
+    info "results: ${output_dir}/"
+    if compgen -G "${output_dir}/*" > /dev/null; then
+        ls -1 "$output_dir" | sed 's|^|  |'
+    fi
+    echo ""
+    info "next:"
+    info "  ${BOLD}mh serve${NC}                            # browse results at http://127.0.0.1:8765/"
+    info "  ${BOLD}mh report --exec ${case_id}${NC}    # one-page executive summary"
+    info "  ${BOLD}mh verify ${case_id}${NC}          # chain-of-custody re-hash"
+
+    return $rc
 }
 
 # ─── orchestrate (LangGraph state-machine driven) ──────────────────────────
 
+# Backward-compatibility alias. The default mode of `mh run` IS LangGraph
+# orchestration as of the unified-CLI refactor — `mh orchestrate <case>` is
+# equivalent to `mh run <case>`. Kept so existing scripts / docs / muscle
+# memory keep working.
 cmd_orchestrate() {
-    local case_id="${1:-}"
-    if [[ -z "$case_id" ]]; then
-        fail "Usage: mh orchestrate <case-id> [--recursion-limit N]"
-        return 2
-    fi
-    shift
-
-    if [[ ! -x "${MH_VENV}/bin/mh-orchestrate" ]]; then
-        fail "mh-orchestrate not installed. Run: mh init"
-        return 1
-    fi
-
-    local case_dir="${MH_CASES_DIR}/${case_id}"
-    local input_dir="${case_dir}/input"
-    local output_dir="${case_dir}/output"
-    if [[ ! -d "$input_dir" ]] || [[ -z "$(ls -A "$input_dir" 2>/dev/null)" ]]; then
-        fail "No evidence at ${input_dir}"
-        return 2
-    fi
-
-    # Fresh cycle: same contract as `mh run` — every investigation starts
-    # with a clean output dir so LangGraph state.json / audit.jsonl /
-    # findings.json never carry over from a prior cycle.
-    if [[ -d "$output_dir" ]] && [[ -n "$(ls -A "$output_dir" 2>/dev/null)" ]]; then
-        info "Resetting prior output for fresh cycle"
-    fi
-    rm -rf "$output_dir"
-    mkdir -p "$output_dir"
-
-    info "Orchestrating case ${case_id} via LangGraph"
-    export MH_HOME EVIDENCE_PATH="$input_dir" CASE_ID="$case_id"
-    "${MH_VENV}/bin/mh-orchestrate" run "$case_id" --cases-dir "$MH_CASES_DIR" "$@"
+    info "note: 'mh orchestrate' is now an alias for 'mh run' (LangGraph is the default mode)"
+    cmd_run "$@"
 }
 
 # ─── serve (local web viewer) ────────────────────────────────────────────────
@@ -827,12 +930,14 @@ cmd_quickstart() {
     echo ""
     ok "Quickstart complete."
     echo ""
-    info "Next:"
-    info "  1. Drop evidence:    mkdir -p cases/case-001/input && cp <files> cases/case-001/input/"
-    info "  2. Run triage:       mh run case-001                  # skill-driven (free-form)"
-    info "                       mh orchestrate case-001          # LangGraph (deterministic)"
-    info "  3. Browse results:   mh serve                         # http://127.0.0.1:8765/"
-    info "  4. Chain-of-custody: mh verify case-001"
+    info "Next — full IR triage in one command:"
+    info "  ${BOLD}mh run /path/to/evidence-file-or-folder${NC}"
+    info "      (or use an existing case name: ${BOLD}mh run case-001${NC})"
+    echo ""
+    info "After triage:"
+    info "  ${BOLD}mh serve${NC}                  # browse findings at http://127.0.0.1:8765/"
+    info "  ${BOLD}mh report --exec <case>${NC}   # one-page executive summary"
+    info "  ${BOLD}mh verify <case>${NC}          # chain-of-custody re-hash"
     echo ""
     info "Real-Claude smoke (~\$0.01): mh demo --real-claude"
 }
@@ -1182,8 +1287,13 @@ ${BOLD}COMMANDS${NC}
                               (default cases/_self/input). No root, no creds.
     demo [--autonomous]       Real-data showcase: self-collect + parse + audit log,
                               all on YOUR machine, no tokens.
-    run <case-id>             Run Claude Code triage on cases/<id>/input/.
-    orchestrate <case-id>     LangGraph state-machine triage (Sub-Plan 02+)
+    run <case|file|folder>    Full IR triage in one command. Accepts:
+                                - case name:  mh run case-001
+                                - file path:  mh run /tmp/memdump.raw
+                                - folder:     mh run /tmp/evidence/
+                              Default: LangGraph (deterministic, full pipeline).
+                              --interactive: skill-driven Claude TUI.
+    orchestrate <case>        Alias for 'mh run' (legacy).
     scope <base> --hosts=CSV  Parallel SSH self-collect across multiple hosts
                               into cases/<base>-<host>/input/.
     report [--exec] <case-id> Plain-English summary by default;
@@ -1201,12 +1311,11 @@ ${BOLD}COMMANDS${NC}
     help                      Show this.
 
 ${BOLD}WORKFLOW${NC}
-    1. bash scripts/install.sh                    # one-line bootstrap (or: mh init)
-    2. claude /login   OR   export ANTHROPIC_API_KEY=sk-ant-...
-    3. mh quickstart                              # auth check + stub demo
-    4. mkdir -p cases/case-001/input
-       cp /path/to/evidence/* cases/case-001/input/
-    5. mh run case-001                            # autonomous triage
+    1. bash scripts/install.sh        # one-line bootstrap
+    2. claude /login                  # (or: export ANTHROPIC_API_KEY=sk-ant-...)
+    3. mh quickstart                  # auth check + free stub demo
+    4. mh run /path/to/evidence       # full IR triage — one command
+    5. mh serve                       # browse results
 
 ${BOLD}DEPLOYMENT${NC} (advanced — host bootstrap with full forensics toolchain)
     scripts/install-sift.sh --check               Report prereq status (no changes)

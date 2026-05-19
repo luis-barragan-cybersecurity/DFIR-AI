@@ -67,18 +67,22 @@ export ANTHROPIC_API_KEY=sk-ant-...   # API key
 ./bin/mh quickstart               # auth check + stub demo (no tokens spent)
 ```
 
-After `mh quickstart` finishes, you're ready for real evidence:
+After `mh quickstart` finishes, full IR triage is **one command**. Point it at a file, a folder, or an existing case name — it figures out the rest:
 
 ```bash
-mkdir -p cases/case-001/input
-cp /path/to/evidence/* cases/case-001/input/
-./bin/mh run case-001             # skill-driven (free-form Claude Code session)
-# OR
-./bin/mh orchestrate case-001     # LangGraph (deterministic state machine)
+./bin/mh run /path/to/memory.raw          # auto-wraps the file into a new case
+./bin/mh run /path/to/evidence-folder/    # auto-wraps the folder into a new case
+./bin/mh run case-001                     # uses cases/case-001/input/
+```
 
+That single command drives the entire IR pipeline: SHA256 manifest, ingest, OS detection, skill routing (FOR500 / FOR518 / FOR577), Windows/macOS/Linux subagent triage, Volatility memory analysis, Verifier dissent loop, MITRE ATT&CK tagging, NIST CSF 2.0 / ISO 27035 / PICERL framework mapping, D3FEND countermeasures, containment + remediation plans, narrative, accuracy report, sha256-chained audit log. Add `--interactive` for the skill-driven free-form Claude TUI (live tool calls visible) when you want to explore manually.
+
+After triage:
+
+```bash
+./bin/mh serve                    # browse findings at http://127.0.0.1:8765/
+./bin/mh report --exec case-001   # one-page executive summary
 ./bin/mh verify case-001          # chain-of-custody re-hash; exit 0 on no spoliation
-./bin/mh serve                    # browse results at http://127.0.0.1:8765/
-./bin/mh report --exec case-001   # one-page executive report
 ```
 
 > Need a containerized run, a SIFT/Ubuntu host bootstrap with the full forensics toolchain, or the prebuilt image? See [`docs/deployment.md`](docs/deployment.md).
