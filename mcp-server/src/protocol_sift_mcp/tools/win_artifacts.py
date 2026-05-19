@@ -210,6 +210,223 @@ def amcacheparser(
     }
 
 
+def appcompatcacheparser(
+    hive_path: str,
+    output_dir: str,
+    *,
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+    max_rows: int = 100_000,
+) -> dict[str, Any]:
+    """AppCompatCacheParser — SYSTEM hive Shimcache/AppCompatCache parser.
+
+    Shimcache records every executable seen on the system (full path + last
+    modified time + size). Survives reboots; one of the few artifacts that
+    captures execution evidence even after the file is deleted.
+
+    Input: SYSTEM hive (extracted from /Windows/System32/config/SYSTEM).
+    """
+    src = assert_input_path(hive_path)
+    out = assert_output_path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    dotnet = _resolve_dotnet()
+    dll = _resolve_tool("AppCompatCacheParser.dll")
+
+    cmd = [dotnet, str(dll), "-f", str(src), "--csv", str(out), "--csvf", "shimcache.csv"]
+    stdout, stderr = _run(cmd, timeout_sec=timeout_sec)
+    csv_path = out / "shimcache.csv"
+    return {
+        "tool": "appcompatcacheparser",
+        "source": str(src),
+        "csv_path": str(csv_path),
+        "rows": _read_csv(csv_path, max_rows=max_rows),
+        "stderr_tail": stderr[-512:],
+        "stdout_tail": stdout[-512:],
+    }
+
+
+def pecmd(
+    prefetch_path: str,
+    output_dir: str,
+    *,
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+    max_rows: int = 100_000,
+) -> dict[str, Any]:
+    """PECmd — Prefetch (.pf) parser, batch-capable.
+
+    Prefetch tracks the last 8 execution times per binary, files accessed
+    during launch, and run count. PECmd handles XPRESS-Huffman compression
+    used on Win10+ (Python fallback: tools/windows.py:win_prefetch_parse,
+    handles single files).
+
+    Accepts a single .pf file OR a directory of .pf files (-d).
+    """
+    src = assert_input_path(prefetch_path)
+    out = assert_output_path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    dotnet = _resolve_dotnet()
+    dll = _resolve_tool("PECmd.dll")
+
+    flag = "-d" if src.is_dir() else "-f"
+    cmd = [dotnet, str(dll), flag, str(src), "--csv", str(out), "--csvf", "prefetch.csv"]
+    stdout, stderr = _run(cmd, timeout_sec=timeout_sec)
+    csv_path = out / "prefetch.csv"
+    return {
+        "tool": "pecmd",
+        "source": str(src),
+        "csv_path": str(csv_path),
+        "rows": _read_csv(csv_path, max_rows=max_rows),
+        "stderr_tail": stderr[-512:],
+        "stdout_tail": stdout[-512:],
+    }
+
+
+def lecmd(
+    lnk_path: str,
+    output_dir: str,
+    *,
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+    max_rows: int = 100_000,
+) -> dict[str, Any]:
+    """LECmd — Windows .lnk shortcut parser, batch-capable.
+
+    Shortcuts capture the original target path, MAC times of the target,
+    volume serial number, NetBIOS / MAC of the host (for remote shortcuts).
+    LECmd batches a directory and recovers deleted entries from slack space.
+
+    Accepts a single .lnk OR a directory (-d). Python fallback:
+    tools/windows.py:win_lnk_parse (single file only).
+    """
+    src = assert_input_path(lnk_path)
+    out = assert_output_path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    dotnet = _resolve_dotnet()
+    dll = _resolve_tool("LECmd.dll")
+
+    flag = "-d" if src.is_dir() else "-f"
+    cmd = [dotnet, str(dll), flag, str(src), "--csv", str(out), "--csvf", "lnk.csv"]
+    stdout, stderr = _run(cmd, timeout_sec=timeout_sec)
+    csv_path = out / "lnk.csv"
+    return {
+        "tool": "lecmd",
+        "source": str(src),
+        "csv_path": str(csv_path),
+        "rows": _read_csv(csv_path, max_rows=max_rows),
+        "stderr_tail": stderr[-512:],
+        "stdout_tail": stdout[-512:],
+    }
+
+
+def jlecmd(
+    jumplist_path: str,
+    output_dir: str,
+    *,
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+    max_rows: int = 100_000,
+) -> dict[str, Any]:
+    """JLECmd — Jump List parser (AutomaticDestinations + CustomDestinations).
+
+    Jump lists record the most-recently-used files per application (Office,
+    browsers, Explorer). Live in
+    `%APPDATA%\\Microsoft\\Windows\\Recent\\(Automatic|Custom)Destinations\\*`.
+    AppID prefix in the filename identifies the source app.
+
+    Accepts a single jumplist file OR a directory (-d).
+    """
+    src = assert_input_path(jumplist_path)
+    out = assert_output_path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    dotnet = _resolve_dotnet()
+    dll = _resolve_tool("JLECmd.dll")
+
+    flag = "-d" if src.is_dir() else "-f"
+    cmd = [dotnet, str(dll), flag, str(src), "--csv", str(out), "--csvf", "jumplist.csv"]
+    stdout, stderr = _run(cmd, timeout_sec=timeout_sec)
+    csv_path = out / "jumplist.csv"
+    return {
+        "tool": "jlecmd",
+        "source": str(src),
+        "csv_path": str(csv_path),
+        "rows": _read_csv(csv_path, max_rows=max_rows),
+        "stderr_tail": stderr[-512:],
+        "stdout_tail": stdout[-512:],
+    }
+
+
+def sbecmd(
+    hive_dir: str,
+    output_dir: str,
+    *,
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+    max_rows: int = 100_000,
+) -> dict[str, Any]:
+    """SBECmd — ShellBags Explorer (batch ShellBag extractor).
+
+    Reads NTUSER.DAT and USRCLASS.DAT hives from `-d <dir>` and reconstructs
+    the user's folder-access tree (which directories were visited even after
+    deletion). Python fallback: tools/windows.py:win_shellbag_parse (single
+    hive, less detail).
+    """
+    src = assert_input_path(hive_dir)
+    out = assert_output_path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    dotnet = _resolve_dotnet()
+    dll = _resolve_tool("SBECmd.dll")
+
+    # SBECmd requires -d for a hive directory; -f for a single hive isn't
+    # supported by the tool. We pass the parent dir of the supplied hive
+    # if the user pointed at a single file.
+    target = src if src.is_dir() else src.parent
+    cmd = [dotnet, str(dll), "-d", str(target), "--csv", str(out)]
+    stdout, stderr = _run(cmd, timeout_sec=timeout_sec)
+    csv_files = sorted(out.glob("*.csv"))
+    rows: list[dict[str, Any]] = []
+    if csv_files:
+        rows = _read_csv(csv_files[-1], max_rows=max_rows)
+    return {
+        "tool": "sbecmd",
+        "source": str(target),
+        "csv_paths": [str(p) for p in csv_files],
+        "rows": rows,
+        "stderr_tail": stderr[-512:],
+        "stdout_tail": stdout[-512:],
+    }
+
+
+def rbcmd(
+    recyclebin_path: str,
+    output_dir: str,
+    *,
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+    max_rows: int = 100_000,
+) -> dict[str, Any]:
+    """RBCmd — Recycle Bin $I/INFO2 parser, batch-capable.
+
+    Parses Vista+ `$I######` headers AND legacy XP INFO2 records. Python
+    fallback: tools/windows.py:win_recyclebin_parse (Vista+ only, single
+    directory).
+
+    Accepts a single $I/INFO2 file OR a directory of $I files (-d).
+    """
+    src = assert_input_path(recyclebin_path)
+    out = assert_output_path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    dotnet = _resolve_dotnet()
+    dll = _resolve_tool("RBCmd.dll")
+
+    flag = "-d" if src.is_dir() else "-f"
+    cmd = [dotnet, str(dll), flag, str(src), "--csv", str(out), "--csvf", "recyclebin.csv"]
+    stdout, stderr = _run(cmd, timeout_sec=timeout_sec)
+    csv_path = out / "recyclebin.csv"
+    return {
+        "tool": "rbcmd",
+        "source": str(src),
+        "csv_path": str(csv_path),
+        "rows": _read_csv(csv_path, max_rows=max_rows),
+        "stderr_tail": stderr[-512:],
+        "stdout_tail": stdout[-512:],
+    }
+
+
 def ez_tools_available() -> dict[str, Any]:
     """Probe whether EZ Tools are usable. Used by tools.list to gate registration."""
     try:
@@ -217,7 +434,11 @@ def ez_tools_available() -> dict[str, Any]:
     except EzToolsUnavailable as exc:
         return {"available": False, "reason": str(exc)}
     found: dict[str, str] = {}
-    for dll in ("EvtxECmd.dll", "MFTECmd.dll", "RECmd.dll", "AmcacheParser.dll"):
+    for dll in (
+        "EvtxECmd.dll", "MFTECmd.dll", "RECmd.dll", "AmcacheParser.dll",
+        "AppCompatCacheParser.dll", "PECmd.dll", "LECmd.dll", "JLECmd.dll",
+        "SBECmd.dll", "RBCmd.dll",
+    ):
         try:
             p = _resolve_tool(dll)
             found[dll] = str(p)

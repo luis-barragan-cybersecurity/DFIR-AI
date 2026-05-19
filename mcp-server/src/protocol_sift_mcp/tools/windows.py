@@ -376,7 +376,7 @@ def _filetime_to_iso(ft: int) -> str | None:
     try:
         # 11644473600 seconds between 1601 and 1970 epoch
         ts = ft / 10_000_000 - 11644473600
-        return _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).isoformat()
+        return _dt.datetime.fromtimestamp(ts, tz=_dt.UTC).isoformat()
     except (OSError, OverflowError, ValueError):
         return None
 
@@ -437,7 +437,7 @@ def _decode_shell_item(blob: bytes) -> dict[str, Any]:
             try:
                 ansi = blob[14:].split(b"\x00", 1)[0]
                 out["name"] = ansi.decode("latin-1", errors="replace")
-            except Exception:  # noqa: BLE001 — best-effort fallback
+            except Exception:  # noqa: BLE001, S110 — best-effort ANSI name fallback; not logging keeps the row JSON-shaped
                 pass
     return out
 
@@ -471,7 +471,7 @@ def win_shellbag_parse(hive_path: str) -> list[dict[str, Any]]:
         try:
             ts = key.timestamp()
             last_write = ts.isoformat() if ts else None
-        except Exception:  # noqa: BLE001 — timestamp may be unavailable on some hives
+        except Exception:  # noqa: BLE001, S110 — timestamp may be unavailable on some hives
             pass
 
         # Numbered subkeys hold deeper folders. Numbered VALUES hold shell items.
@@ -489,7 +489,7 @@ def win_shellbag_parse(hive_path: str) -> list[dict[str, Any]]:
                             "last_write": last_write,
                             **decoded,
                         })
-                except Exception:  # noqa: BLE001 — skip unparseable entries, never crash
+                except Exception:  # noqa: BLE001, S112 — skip unparseable entries, never crash the whole walk
                     continue
 
         for sub in key.subkeys():
@@ -498,7 +498,7 @@ def win_shellbag_parse(hive_path: str) -> list[dict[str, Any]]:
     for root_path in _SHELLBAG_PATHS:
         try:
             key = reg.open(root_path)
-        except Exception:  # noqa: BLE001 — most hives only have one of these
+        except Exception:  # noqa: BLE001, S112 — most hives only have one of these three BagMRU roots
             continue
         walk(key, root_path)
 
@@ -642,3 +642,61 @@ def win_ese_query(
         raise
     except Exception as exc:  # noqa: BLE001
         raise EseToolError(f"ESE open/read failed for {p.name}: {exc}") from exc
+
+
+# ─── ESE-derived thin wrappers (Tier 2) ───────────────────────────────────────
+# Each picks the canonical table + columns from a specific ESE artifact so the
+# agent doesn't need to know the schema. They all ride on `win_ese_query`
+# (which uses dissect.esedb) — no new dependency, no schema duplication.
+
+
+# SRUM = System Resource Usage Monitor.
+# SRUDB.dat is at C:\Windows\System32\sru\SRUDB.dat. It records 30-60 days of
+# per-app network bytes, energy use, process activity, and push notifications.
+# Tables of interest (GUID-named):
+SRUM_TABLES: dict[str, str] = {
+    "network_data":   "{973F5D5C-1D90-4944-BE8E-24B94231A174}",
+    "network_conn":   "{DD6636C4-8929-4683-974E-22C046A43763}",
+    "app_resource":   "{D10CA2FE-6FCF-4F6D-848E-B2E99266FA89}",
+    "energy_usage":   "{FEE4E14F-02A9-4550-B5CE-5FA2DA202E37}",
+    "push_notif":     "{D10CA2FE-6FCF-4F6D-848E-B2E99266FA86}",
+}
+
+
+def srum_query(db_path: str, table: str = "app_resource", *, limit: int = 10_000) -> list[dict[str, object]]:
+    """Read a SRUM table by friendly name.
+
+    Args:
+        db_path: path under /input to SRUDB.dat
+        table: friendly name from SRUM_TABLES (default "app_resource")
+        limit: max rows
+
+    Returns: list of row dicts. Same schema as win_ese_query.
+    """
+    if table not in SRUM_TABLES:
+        raise ValueError(f"table must be one of {list(SRUM_TABLES)}")
+    return win_ese_query(db_path, SRUM_TABLES[table], limit=limit)
+
+
+def wxt_query(db_path: str, *, limit: int = 10_000) -> list[dict[str, object]]:
+    """Read Win10 Timeline / ActivitiesCache.db.
+
+    ActivitiesCache.db (per-user `%LOCALAPPDATA%\\ConnectedDevicesPlatform\\
+    L.<username>\\ActivitiesCache.db`) is SQLite, not ESE — but the EZ Tool
+    `WxTCmd` exists for the same artifact. This wrapper routes through
+    `sqlite_query` to a known table set, providing the same parity for
+    ActivitiesCache that srum_query provides for SRUDB.
+    """
+    from .parse import sqlite_query
+    # Activity is the primary table; columns map to user actions, app IDs,
+    # timestamps, content type. (Use SELECT * since rows include JSON blobs.)
+    return sqlite_query(db_path, "SELECT * FROM Activity ORDER BY StartTime DESC", limit=limit)
+
+
+def webcache_query(db_path: str, *, limit: int = 10_000) -> list[dict[str, object]]:
+    """Read WebCacheV01.dat Container records (IE/Edge browser cache index).
+
+    Container records carry per-app history (Internet history container is
+    the high-value table for browsing reconstruction).
+    """
+    return win_ese_query(db_path, "Containers", limit=limit)
