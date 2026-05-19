@@ -191,6 +191,14 @@ cmd_init() {
 
     info "MemoryHound init — creating venv + installing deps"
 
+    # OS detection drives the error messages so newbies see the right install
+    # command for their platform.
+    local OS_KIND="unknown"
+    case "$(uname -s)" in
+        Darwin) OS_KIND="macos" ;;
+        Linux)  OS_KIND="linux" ;;
+    esac
+
     local PY=""
     for cand in python3.13 python3.12 python3.11; do
         if command -v "$cand" >/dev/null 2>&1; then
@@ -198,10 +206,33 @@ cmd_init() {
         fi
     done
     if [[ -z "$PY" ]]; then
-        fail "Python 3.11+ required. Install with brew or apt."
+        fail "Python 3.11+ required and not found on PATH."
+        case "$OS_KIND" in
+            macos)
+                info "    Install via Homebrew:"
+                info "      brew install python@3.12"
+                info "    Then re-run: mh init"
+                ;;
+            linux)
+                info "    Install via apt:"
+                info "      sudo apt-get install -y python3.12 python3.12-venv"
+                info "    Or via dnf:"
+                info "      sudo dnf install -y python3.12"
+                ;;
+            *)
+                info "    Install Python 3.11+ from https://www.python.org/downloads/"
+                ;;
+        esac
         return 1
     fi
     info "Using $PY ($(command -v "$PY"))"
+
+    # Surface a claude-CLI hint up front so newbies know what they'll need
+    # next — but don't block init on it. (Real triage needs it; init does not.)
+    if ! command -v claude >/dev/null 2>&1; then
+        warn "claude CLI not on PATH (you'll need it to run real triage)."
+        info "    Install Claude Code: https://docs.claude.com/en/docs/claude-code/quickstart"
+    fi
 
     if [[ ! -x "$MH_PY" ]]; then
         info "Creating venv at $MH_VENV"
@@ -224,16 +255,22 @@ cmd_init() {
 
     mkdir -p "$MH_CASES_DIR"
 
-    info "Running test suite to verify install"
-    if PYTHONPATH="${MH_HOME}/mcp-server/src" "$MH_PY" -m pytest "${MH_HOME}/mcp-server/tests" -q --no-cov 2>&1 | tail -5; then
-        ok "Tests passing"
+    # MH_INIT_SKIP_TESTS=1 lets newbies skip the ~3s pytest step and get to
+    # the demo faster. Tests still runnable later via: mh doctor / mh check.
+    if [[ "${MH_INIT_SKIP_TESTS:-0}" == "1" ]]; then
+        info "MH_INIT_SKIP_TESTS=1 — skipping test suite verification"
     else
-        warn "Tests did not all pass — check above"
+        info "Running test suite to verify install (set MH_INIT_SKIP_TESTS=1 to skip)"
+        if PYTHONPATH="${MH_HOME}/mcp-server/src" "$MH_PY" -m pytest "${MH_HOME}/mcp-server/tests" -q --no-cov 2>&1 | tail -5; then
+            ok "Tests passing"
+        else
+            warn "Tests did not all pass — check above"
+        fi
     fi
 
     echo ""
     ok "Init complete."
-    info "Next: 'mh doctor' to confirm full env, then 'mh run <case-id>'"
+    info "Next: 'mh quickstart' for auth check + 60-second demo"
 }
 
 # ─── run ─────────────────────────────────────────────────────────────────────
@@ -695,6 +732,92 @@ cmd_check() {
     fi
 }
 
+# ─── quickstart ──────────────────────────────────────────────────────────────
+# One command from "freshly installed" to "demo output on screen."
+# Sequence: doctor (critical only) → auth check → demo (stub mode by default).
+# Newbie-friendly: prints exact next-step commands at each branch.
+
+cmd_quickstart() {
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help)
+                echo "Usage: mh quickstart"
+                echo ""
+                echo "  Runs doctor + auth check + stub demo (no tokens)."
+                echo "  After this completes, you're ready to drop evidence into"
+                echo "  cases/<id>/input/ and run 'mh run <id>'."
+                echo ""
+                echo "  Never invokes paid Claude APIs. Use 'mh demo --real-claude'"
+                echo "  for the explicit ~\$0.01 smoke test."
+                return 0
+                ;;
+        esac
+    done
+
+    info "MemoryHound quickstart — first-run sanity + demo"
+    echo ""
+
+    # ─── Step 1: doctor (critical-only) ──────────────────────────────────────
+    info "Step 1/3: environment check"
+    if ! cmd_doctor; then
+        echo ""
+        fail "Environment check failed — see ✗/! lines above."
+        info "    Fix the failing items, then re-run: mh quickstart"
+        return 1
+    fi
+
+    # ─── Step 2: auth check ──────────────────────────────────────────────────
+    echo ""
+    info "Step 2/3: Claude Code auth check"
+    local has_subscription=0
+    local has_api_key=0
+    [[ -d "$HOME/.claude" ]] && has_subscription=1
+    [[ -n "${ANTHROPIC_API_KEY:-}" ]] && has_api_key=1
+
+    if (( has_subscription )) && (( has_api_key )); then
+        ok "Both auth paths present (ANTHROPIC_API_KEY takes precedence over subscription)"
+        warn "  If subscription-based auth is desired, unset ANTHROPIC_API_KEY for this session:"
+        info "    unset ANTHROPIC_API_KEY"
+    elif (( has_subscription )); then
+        ok "Subscription auth active (~/.claude exists)"
+        info "  If 'claude /status' shows 'Not logged in', re-run: claude /login"
+    elif (( has_api_key )); then
+        ok "API key auth active (ANTHROPIC_API_KEY set)"
+    else
+        fail "No Claude auth configured."
+        echo ""
+        info "    Choose ONE of:"
+        info "      claude /login                       # Pro/Max subscription (recommended)"
+        info "      export ANTHROPIC_API_KEY=sk-ant-…    # API key"
+        echo ""
+        info "    Then re-run: mh quickstart"
+        return 1
+    fi
+
+    # ─── Step 3: stub demo (no tokens) ───────────────────────────────────────
+    echo ""
+    info "Step 3/3: running stub demo (no tokens spent)"
+    echo ""
+    if ! cmd_demo; then
+        echo ""
+        fail "Demo failed — see output above."
+        return 1
+    fi
+
+    # ─── next-step guidance ──────────────────────────────────────────────────
+    echo ""
+    ok "Quickstart complete."
+    echo ""
+    info "Next:"
+    info "  1. Drop evidence:    mkdir -p cases/case-001/input && cp <files> cases/case-001/input/"
+    info "  2. Run triage:       mh run case-001                  # skill-driven (free-form)"
+    info "                       mh orchestrate case-001          # LangGraph (deterministic)"
+    info "  3. Browse results:   mh serve                         # http://127.0.0.1:8765/"
+    info "  4. Chain-of-custody: mh verify case-001"
+    echo ""
+    info "Real-Claude smoke (~\$0.01): mh demo --real-claude"
+}
+
 # ─── self-collect ────────────────────────────────────────────────────────────
 
 cmd_self_collect() {
@@ -1033,6 +1156,8 @@ ${BOLD}USAGE${NC}
 ${BOLD}COMMANDS${NC}
     init [--with-forensics]   First-time setup: venv, deps.
                               --with-forensics adds heavy libs (Volatility, etc.)
+    quickstart                One command from "installed" to "demo running."
+                              doctor + auth check + stub demo. No tokens.
     doctor                    Health check across env, deps, auth.
     self-collect [DEST]       Copy safe DFIR artifacts from this host into DEST
                               (default cases/_self/input). No root, no creds.
@@ -1057,20 +1182,18 @@ ${BOLD}COMMANDS${NC}
     help                      Show this.
 
 ${BOLD}WORKFLOW${NC}
-    1. mh init                                    # one-time setup
+    1. bash scripts/install.sh                    # one-line bootstrap (or: mh init)
     2. claude /login   OR   export ANTHROPIC_API_KEY=sk-ant-...
-    3. mkdir -p cases/case-001/input
+    3. mh quickstart                              # auth check + stub demo
+    4. mkdir -p cases/case-001/input
        cp /path/to/evidence/* cases/case-001/input/
-    4. mh run case-001                            # autonomous triage
+    5. mh run case-001                            # autonomous triage
 
-${BOLD}DEPLOYMENT${NC} (Sub-Plan 05)
+${BOLD}DEPLOYMENT${NC} (advanced — host bootstrap with full forensics toolchain)
     scripts/install-sift.sh --check               Report prereq status (no changes)
-    scripts/install-sift.sh --install             Bootstrap host environment
-    docker compose up                             Local-build container path
-    docker pull ghcr.io/<owner>/memoryhound:sub-plan-05-complete
-                                                  Pre-built image (after tag push)
+    scripts/install-sift.sh --install             Bootstrap SIFT/Ubuntu host
 
-    See docs/deployment.md for the full matrix.
+    See docs/deployment.md for the full matrix (incl. Docker paths).
 
 ${BOLD}DOCS${NC}
     docs/architecture.md      — full design
@@ -1090,6 +1213,7 @@ main() {
     case "$cmd" in
         init)         cmd_init "$@" ;;
         doctor)       cmd_doctor "$@" ;;
+        quickstart)   cmd_quickstart "$@" ;;
         demo)         cmd_demo "$@" ;;
         self-collect) cmd_self_collect "$@" ;;
         run)          cmd_run "$@" ;;
