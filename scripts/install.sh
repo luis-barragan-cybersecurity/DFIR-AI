@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
 # MemoryHound one-line installer.
 #
-# Usage (from a freshly cloned repo):
-#   bash scripts/install.sh
+# Installs EVERYTHING MemoryHound needs to run real DFIR cases out of the box:
+#   - System packages: python 3.11+, git, curl, jq, libmagic, yara, sleuthkit,
+#     tshark, zeek, binwalk (best-effort), node, claude CLI
+#   - Python deps: protocol_sift_mcp + orchestrator (editable) + forensics
+#     extras (volatility3, python-evtx, python-registry, pefile, yara-python,
+#     windowsprefetch, pylnk3, python-magic)
+#   - Vendored ISF symbols for Volatility 3 (Linux/macOS memory dumps)
 #
-# Or via curl (after pushing to a fixed URL):
-#   curl -fsSL https://raw.githubusercontent.com/saivarun3407/DFIR-AI/main/scripts/install.sh | bash
+# Usage:
+#   bash scripts/install.sh                # interactive — prompts before sudo/brew
+#   MH_INSTALL_YES=1 bash scripts/install.sh  # non-interactive (CI / unattended)
 #
-# What this does (in order):
-#   1. Detects OS (macOS / Linux) and prints a banner
-#   2. Checks for Python 3.11+ — prints brew/apt install hint if missing
-#   3. Checks for the `claude` CLI — prints docs URL if missing (warn, not fail)
-#   4. Runs `bin/mh init` to create venv + install deps
-#   5. Prints the single next-step command: `mh quickstart`
+# OS support:
+#   - macOS (Homebrew required — installer prints URL if missing)
+#   - Ubuntu / Debian / SIFT (apt; needs sudo)
+#   - Fedora / RHEL / Rocky / CentOS (dnf; needs sudo, best-effort)
 #
-# This script does NOT auto-install system packages. It surfaces what's missing
-# and tells the user exactly which command to run. Newbie-friendly without
-# being silently invasive.
+# Time estimate: 3–15 minutes depending on what's already installed.
 #
-# For the heavyweight SIFT/Ubuntu host bootstrap (Volatility, EZ Tools, ISF
-# symbols), use `scripts/install-sift.sh` instead.
+# This is the friendly entry point. The heavy lifting lives in
+# `scripts/install-sift.sh` (--install --with-forensics --with-symbols) — this
+# script wraps it with an upfront banner, time/sudo expectations, and an
+# optional confirmation prompt.
 
 set -euo pipefail
 
@@ -34,96 +38,92 @@ warn() { echo -e "${YELLOW}!${NC} $*"; }
 fail() { echo -e "${RED}✗${NC} $*"; }
 info() { echo -e "${BOLD}»${NC} $*"; }
 
-# Resolve repo root (script lives in scripts/)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-echo ""
-info "MemoryHound installer"
-info "  Repo:    $REPO_ROOT"
-
-# ─── Step 1: OS detection ────────────────────────────────────────────────────
+# ─── Banner: what this installer does ───────────────────────────────────────
 OS_KIND="unknown"
 case "$(uname -s)" in
     Darwin) OS_KIND="macos" ;;
     Linux)  OS_KIND="linux" ;;
-    *)      OS_KIND="unknown" ;;
 esac
-info "  OS:      $OS_KIND ($(uname -s) $(uname -r 2>/dev/null || echo '?'))"
+
+echo ""
+echo -e "${BOLD}MemoryHound installer — full out-of-the-box install${NC}"
+echo ""
+echo "  Repo:    $REPO_ROOT"
+echo "  OS:      $OS_KIND ($(uname -s) $(uname -r 2>/dev/null || echo '?'))"
+echo ""
+echo "  What this will install (3–15 minutes total):"
+echo "    • Python 3.11+, git, curl, jq, libmagic (base utilities)"
+echo "    • node + Claude Code CLI"
+echo "    • Forensics system packages — yara, sleuthkit, tshark, zeek, binwalk"
+echo "    • Python deps — protocol_sift_mcp, orchestrator, volatility3,"
+echo "                    python-evtx, python-registry, pefile, yara-python,"
+echo "                    windowsprefetch, pylnk3, python-magic"
+echo "    • Vendored ISF symbols for Volatility 3"
 echo ""
 
-# ─── Step 2: Python 3.11+ check ──────────────────────────────────────────────
-info "Step 1/4: checking Python 3.11+"
-PY_BIN=""
-for cand in python3.13 python3.12 python3.11; do
-    if command -v "$cand" >/dev/null 2>&1; then
-        PY_BIN="$(command -v "$cand")"
-        break
-    fi
-done
+case "$OS_KIND" in
+    macos)
+        echo -e "  ${YELLOW}macOS:${NC} requires ${BOLD}Homebrew${NC}. Installer will print install URL if missing."
+        ;;
+    linux)
+        echo -e "  ${YELLOW}Linux:${NC} requires ${BOLD}sudo${NC} for apt/dnf package install."
+        ;;
+    *)
+        warn "OS '$OS_KIND' not auto-supported. Installer will degrade to Python-only."
+        ;;
+esac
 
-if [[ -n "$PY_BIN" ]]; then
-    ok "Found: $PY_BIN ($("$PY_BIN" --version 2>&1))"
-else
-    fail "No Python 3.11+ on PATH."
-    case "$OS_KIND" in
-        macos)
-            echo "        Install with Homebrew:"
-            echo "          brew install python@3.12"
-            echo "        Then re-run this installer."
-            ;;
-        linux)
-            echo "        Install with your package manager, e.g.:"
-            echo "          sudo apt-get install -y python3.12 python3.12-venv"
-            echo "        Or on RPM-based:"
-            echo "          sudo dnf install -y python3.12"
-            ;;
-        *)
-            echo "        Install Python 3.11 or newer from https://www.python.org/downloads/"
-            ;;
+echo ""
+
+# ─── Confirmation gate (skippable for CI) ────────────────────────────────────
+if [[ "${MH_INSTALL_YES:-0}" != "1" ]]; then
+    read -r -p "  Continue? [Y/n] " response || true
+    case "$response" in
+        ""|[yY]|[yY][eE][sS]) ;;
+        *) info "Aborted by user."; exit 0 ;;
     esac
+    echo ""
+fi
+
+# ─── Delegate to install-sift.sh with full flags ─────────────────────────────
+info "Delegating to scripts/install-sift.sh --install --with-forensics --with-symbols"
+echo ""
+
+if [[ ! -x "$REPO_ROOT/scripts/install-sift.sh" ]]; then
+    chmod +x "$REPO_ROOT/scripts/install-sift.sh" 2>/dev/null || true
+fi
+
+if ! bash "$REPO_ROOT/scripts/install-sift.sh" --install --with-forensics --with-symbols; then
+    echo ""
+    fail "install-sift.sh failed — see output above"
+    echo ""
+    info "  Common fixes:"
+    info "    macOS: ensure Homebrew is installed → https://brew.sh"
+    info "    Linux: re-run with sudo, or set MH_INSTALL_NO_SUDO=1 to skip system packages"
+    info "    All:   see scripts/install-sift.sh --help"
     exit 1
 fi
 
-# ─── Step 3: claude CLI check (warn-only) ────────────────────────────────────
+# ─── Next-step guidance ──────────────────────────────────────────────────────
 echo ""
-info "Step 2/4: checking Claude Code CLI"
-if command -v claude >/dev/null 2>&1; then
-    ok "Found: $(command -v claude)"
-    if claude --version >/dev/null 2>&1; then
-        info "  Version: $(claude --version 2>&1 | head -1)"
-    fi
-else
-    warn "claude CLI not on PATH."
-    echo "        MemoryHound can install without it, but you'll need it to run real triage."
-    echo "        Install Claude Code: https://docs.claude.com/en/docs/claude-code/quickstart"
-    echo "        After install, choose ONE of:"
-    echo "          claude /login                     # Pro/Max subscription (recommended)"
-    echo "          export ANTHROPIC_API_KEY=sk-ant-…  # API key"
-fi
-
-# ─── Step 4: bin/mh init ─────────────────────────────────────────────────────
+ok "MemoryHound installed (full forensics toolchain)."
 echo ""
-info "Step 3/4: running bin/mh init (creates .venv, installs deps)"
-if [[ ! -x "$REPO_ROOT/bin/mh" ]]; then
-    chmod +x "$REPO_ROOT/bin/mh" 2>/dev/null || true
-fi
-
-if "$REPO_ROOT/bin/mh" init; then
-    ok "Init complete"
-else
-    fail "mh init failed — see output above"
-    exit 1
-fi
-
-# ─── Step 5: next-step guidance ──────────────────────────────────────────────
+echo "  Next:"
+echo -e "    1. ${BOLD}claude /login${NC}                                    # Pro/Max subscription (recommended)"
+echo "       OR"
+echo -e "       ${BOLD}export ANTHROPIC_API_KEY=sk-ant-…${NC}               # API key"
 echo ""
-info "Step 4/4: ready"
+echo -e "    2. ${BOLD}./bin/mh quickstart${NC}                              # auth check + stub demo (no tokens)"
 echo ""
-ok "MemoryHound installed."
+echo "    3. Real triage:"
+echo -e "       ${BOLD}mkdir -p cases/case-001/input${NC}"
+echo -e "       ${BOLD}cp /path/to/evidence/* cases/case-001/input/${NC}"
+echo -e "       ${BOLD}./bin/mh run case-001${NC}                            # interactive (free-form)"
+echo -e "       ${BOLD}./bin/mh orchestrate case-001${NC}                    # deterministic (LangGraph)"
 echo ""
-echo "  Next:  ${BOLD}./bin/mh quickstart${NC}      # auth check + 60-second demo"
-echo ""
-echo "  Or add bin/ to PATH so 'mh' works from anywhere:"
-echo "    export PATH=\"$REPO_ROOT/bin:\$PATH\""
+echo "  Add bin/ to PATH so 'mh' works from anywhere:"
+echo -e "    ${BOLD}export PATH=\"$REPO_ROOT/bin:\$PATH\"${NC}"
 echo ""

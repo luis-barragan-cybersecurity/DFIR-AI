@@ -199,8 +199,7 @@ run_install() {
             install_dnf_prereqs
             ;;
         macos)
-            warn "macOS detected — skipping APT block."
-            warn "On macOS install python@3.12, jq, libmagic via 'brew install python@3.12 jq libmagic' if missing."
+            install_brew_prereqs
             ;;
         *)
             warn "OS '$os' not auto-supported — manual prereq install required."
@@ -264,7 +263,23 @@ install_apt_prereqs() {
         fail "APT install failed"
         exit 1
     fi
-    ok "APT prereqs installed"
+    ok "APT base prereqs installed"
+
+    # Forensics extras gated on WITH_FORENSICS — keeps CI / minimal installs
+    # lightweight. Zeek and bulk-extractor often live outside Ubuntu main:
+    # we attempt them with `|| warn` so failure doesn't abort install.
+    if (( WITH_FORENSICS )); then
+        info "APT forensics extras: yara sleuthkit tshark binwalk"
+        if ! run_root apt-get install -y --no-install-recommends \
+                yara libyara-dev sleuthkit tshark binwalk; then
+            warn "APT forensics partial/failed — some Python forensics deps may fail to build"
+        fi
+        # Best-effort optional forensics packages. Zeek lives in its own repo
+        # on Ubuntu, bulk-extractor is often in universe — warn-only.
+        run_root apt-get install -y --no-install-recommends zeek bulk-extractor 2>/dev/null \
+            || warn "zeek / bulk-extractor not in default repos — manual install if needed"
+        ok "APT forensics prereqs attempted"
+    fi
 }
 
 install_dnf_prereqs() {
@@ -273,9 +288,78 @@ install_dnf_prereqs() {
         warn "DNF install needs sudo or root — skipping (pip steps will still try)"
         return 0
     fi
+    # Base: python + system utils. Forensics extras (yara, sleuthkit, wireshark,
+    # binwalk) gated on WITH_FORENSICS to avoid surprise on users who only
+    # want Windows / Linux text-artifact triage.
     run_root dnf install -y python3.11 python3-pip git curl jq unzip file-libs || \
-        warn "DNF install partial/failed — continuing"
+        warn "DNF base install partial/failed — continuing"
+    if (( WITH_FORENSICS )); then
+        info "DNF forensics extras: yara sleuthkit wireshark-cli binwalk"
+        run_root dnf install -y yara yara-devel sleuthkit wireshark-cli binwalk || \
+            warn "DNF forensics partial/failed — some Python forensics deps may fail to build"
+    fi
     ok "DNF prereqs attempted"
+}
+
+# ─── macOS / Homebrew install path ──────────────────────────────────────────
+#
+# Strategy: Homebrew is the de facto package manager on macOS for forensics
+# tooling. We DO NOT auto-install Homebrew itself (that's a `curl | bash`
+# pattern from someone else's server and the user should opt in to it
+# explicitly). If brew is missing, we print the official install URL and exit.
+# Once brew is present, we install everything non-interactively.
+
+install_brew_prereqs() {
+    info "macOS prereqs via Homebrew"
+
+    if ! command -v brew >/dev/null 2>&1; then
+        fail "Homebrew not found."
+        echo
+        echo "    Install Homebrew first (one-time, ~5 min):"
+        echo "      /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+        echo
+        echo "    Then re-run: bash scripts/install.sh"
+        exit 1
+    fi
+
+    ok "brew — $(command -v brew)"
+
+    # Base set: python + system utils. Always installed on macOS path.
+    local base_pkgs=(python@3.12 git curl jq libmagic)
+    info "brew install (base): ${base_pkgs[*]}"
+    if ! brew install "${base_pkgs[@]}" 2>&1 | grep -E '^(==>|Error)' | head -20; then
+        # brew install returns 0 even on "already installed"; suppress noise
+        true
+    fi
+    ok "base brew prereqs installed (or already present)"
+
+    # Forensics set: gated on flag. Wireshark on macOS is a full GUI cask
+    # (~250 MB) — we install the lighter `wireshark` formula which provides
+    # tshark only. zeek is available as a formula. bulk_extractor is NOT in
+    # core Homebrew — warn-only with manual link.
+    if (( WITH_FORENSICS )); then
+        local forensics_pkgs=(yara sleuthkit wireshark zeek binwalk)
+        info "brew install (forensics): ${forensics_pkgs[*]}"
+        info "  (this can take 5–15 min on first run; brew compiles some deps)"
+        if ! brew install "${forensics_pkgs[@]}" 2>&1 | grep -E '^(==>|Error)' | head -30; then
+            true
+        fi
+        ok "forensics brew prereqs installed (or already present)"
+
+        if ! command -v bulk_extractor >/dev/null 2>&1; then
+            warn "bulk_extractor not in core Homebrew."
+            warn "  Optional manual install: https://github.com/simsong/bulk_extractor#installing"
+        fi
+    fi
+
+    # node + claude CLI handled by install_node_and_claude_cli; we install
+    # node here via brew so that helper finds it instead of warning "install
+    # via brew install node@18 manually".
+    if ! command -v node >/dev/null 2>&1; then
+        info "brew install node"
+        brew install node 2>&1 | grep -E '^(==>|Error)' | head -10 || true
+        ok "node installed via brew"
+    fi
 }
 
 install_node_and_claude_cli() {
