@@ -682,33 +682,62 @@ EOF
 # ─── report (plain-English summary, no LLM, no tokens) ──────────────────────
 
 cmd_report() {
-    # Two modes:
+    # Three modes:
     #   mh report <case-id>          - plain-English non-technical summary
     #   mh report --exec <case-id>   - executive incident report (one-page
     #                                   exec view + technical appendix +
     #                                   platform-specific containment cmds)
+    #   mh report --pdf <case-id>    - render exec-report.md to a branded PDF
+    #                                   via WeasyPrint (requires
+    #                                   `pip install weasyprint markdown`).
+    #                                   Auto-runs --exec first if exec-report.md
+    #                                   isn't already present.
     local exec_mode=0
+    local pdf_mode=0
     local case_id=""
     for arg in "$@"; do
         case "$arg" in
             --exec) exec_mode=1 ;;
+            --pdf)  pdf_mode=1 ;;
             -h|--help)
-                echo "Usage: mh report [--exec] <case-id>"
+                echo "Usage: mh report [--exec|--pdf] <case-id>"
                 echo "  default       Plain-English summary for non-technical readers"
                 echo "  --exec        Executive report with next-4h actions + commands"
+                echo "  --pdf         Branded PDF of the exec report (WeasyPrint)"
                 return 0
                 ;;
             *) case_id="$arg" ;;
         esac
     done
     if [[ -z "$case_id" ]]; then
-        fail "Usage: mh report [--exec] <case-id>"
+        fail "Usage: mh report [--exec|--pdf] <case-id>"
         return 2
     fi
     local case_dir="${MH_CASES_DIR}/${case_id}"
     if [[ ! -d "$case_dir/output" ]]; then
         fail "No output dir at ${case_dir}/output — run mh run first"
         return 1
+    fi
+
+    if (( pdf_mode )); then
+        # Ensure the exec markdown exists — it's the source for the PDF.
+        if [[ ! -f "${case_dir}/output/exec-report.md" ]]; then
+            info "exec-report.md missing — running --exec first to produce it"
+            "$MH_PY" "${MH_HOME}/scripts/exec-report.py" "$case_dir" || {
+                fail "exec-report.py failed — see output above"
+                return 1
+            }
+        fi
+        info "Rendering PDF via WeasyPrint…"
+        if ! "$MH_PY" "${MH_HOME}/scripts/generate_pdf_report.py" "$case_dir"; then
+            fail "PDF render failed — see error above"
+            info "  Install deps:  $MH_PY -m pip install weasyprint markdown"
+            info "  Linux runtime: sudo apt-get install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 libpango-1.0-0"
+            return 1
+        fi
+        echo ""
+        ok "PDF report at ${case_dir}/output/report.pdf"
+        return 0
     fi
 
     if (( exec_mode )); then
@@ -1296,9 +1325,13 @@ ${BOLD}COMMANDS${NC}
     orchestrate <case>        Alias for 'mh run' (legacy).
     scope <base> --hosts=CSV  Parallel SSH self-collect across multiple hosts
                               into cases/<base>-<host>/input/.
-    report [--exec] <case-id> Plain-English summary by default;
+    report [--exec|--pdf] <case-id>
+                              Plain-English summary by default;
                               --exec emits one-page exec view + technical
-                              appendix + per-platform containment commands.
+                              appendix + per-platform containment commands;
+                              --pdf renders the exec report to a branded PDF
+                              (requires weasyprint + markdown — install via
+                              `mh init` with the [reports] extra).
     serve [--port=N]          Local web viewer for cases (markdown rendered,
                               audit log pretty-printed). Default port 8765.
     status                    List cases + their phase.
