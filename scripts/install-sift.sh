@@ -288,6 +288,18 @@ install_apt_prereqs() {
         fi
         probe_log+="    → will install $py_pkg + ${py_pkg}-venv\n"
         missing+=("$py_pkg" "${py_pkg}-venv")
+    else
+        # Python binary is on PATH, but on Debian/Ubuntu the venv/ensurepip
+        # module ships as a SEPARATE apt package (python3.X-venv). Without
+        # it, `python3.X -m venv` fails with "ensurepip is not available"
+        # downstream in `mh init`. Probe explicitly: a working ensurepip
+        # import is the canonical test.
+        if ! "$have_python" -c "import ensurepip" >/dev/null 2>&1; then
+            missing+=("${have_python}-venv")
+            probe_log+="    → will install ${have_python}-venv (ensurepip missing on $have_python)\n"
+        else
+            probe_log+="    ✓ $have_python venv/ensurepip module available\n"
+        fi
     fi
 
     # pip
