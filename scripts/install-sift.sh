@@ -214,8 +214,22 @@ run_install() {
     final_doctor_check
 }
 
+# Returns the best Python 3.11+ apt package name available in the current
+# repos (probes python3.13 → 3.12 → 3.11). Echoes the name; empty string if
+# none found. Used to pick the right Python version per Ubuntu/Debian release
+# without hard-coding (3.12 on Noble, 3.11 on Jammy, deadsnakes on Focal).
+_apt_resolve_python_pkg() {
+    for cand in python3.13 python3.12 python3.11; do
+        if apt-cache show "$cand" 2>/dev/null | grep -q '^Package: '; then
+            echo "$cand"
+            return 0
+        fi
+    done
+    echo ""
+}
+
 install_apt_prereqs() {
-    info "APT prereqs (Debian/Ubuntu/SIFT)"
+    info "APT prereqs (Debian/Ubuntu/SIFT) — probing dependencies first"
     if ! check_sudo_or_root; then
         if [[ "${MH_INSTALL_NO_SUDO:-0}" == "1" ]]; then
             warn "MH_INSTALL_NO_SUDO=1 — skipping APT block"
@@ -236,16 +250,28 @@ install_apt_prereqs() {
         fi
     fi
 
-    # Python 3.11+ is hard-required by pyproject.toml. SIFT Workstation
-    # (Ubuntu 22.04) ships python3.10 and has no python3.11 in default
-    # repos — we have to add the deadsnakes PPA when python3.11 isn't
-    # already known to apt. Skip the PPA if any python3.11+ is already
-    # installed system-wide.
-    if ! command -v python3.11 >/dev/null 2>&1 \
-            && ! command -v python3.12 >/dev/null 2>&1 \
-            && ! command -v python3.13 >/dev/null 2>&1; then
-        if ! apt-cache show python3.11 >/dev/null 2>&1; then
-            info "python3.11 not in apt cache — adding deadsnakes PPA"
+    # ─── Probe phase: build the list of missing packages first ────────────
+    # Issue a single apt-get install for only what's missing. Skip apt-get
+    # entirely when everything is already present.
+    local missing=()
+    local probe_log=""
+
+    # Python 3.11+: prefer an existing binary, else install whatever
+    # python3.11+ apt offers. pyproject.toml requires >=3.11, any of 3.11,
+    # 3.12, 3.13 satisfies it.
+    local have_python="" py_pkg=""
+    for cand in python3.13 python3.12 python3.11; do
+        if command -v "$cand" >/dev/null 2>&1; then
+            have_python="$cand"
+            probe_log+="    ✓ $cand already on PATH ($(command -v "$cand"))\n"
+            break
+        fi
+    done
+
+    if [[ -z "$have_python" ]]; then
+        py_pkg="$(_apt_resolve_python_pkg)"
+        if [[ -z "$py_pkg" ]]; then
+            info "no python3.11+ in apt cache — adding deadsnakes PPA"
             run_root apt-get install -y --no-install-recommends \
                 software-properties-common ca-certificates || \
                 warn "couldn't pre-install software-properties-common"
@@ -254,49 +280,197 @@ install_apt_prereqs() {
                 exit 1
             fi
             run_root apt-get update -qq || warn "post-PPA apt-get update returned non-zero — continuing"
+            py_pkg="$(_apt_resolve_python_pkg)"
+            if [[ -z "$py_pkg" ]]; then
+                fail "no python3.11+ available even after deadsnakes PPA — manual install required"
+                exit 1
+            fi
         fi
+        probe_log+="    → will install $py_pkg + ${py_pkg}-venv\n"
+        missing+=("$py_pkg" "${py_pkg}-venv")
     fi
 
-    if ! run_root apt-get install -y --no-install-recommends \
-            python3.11 python3.11-venv python3-pip git curl ca-certificates \
-            jq unzip libmagic1; then
-        fail "APT install failed"
-        exit 1
+    # pip
+    if ! command -v pip3 >/dev/null 2>&1 && ! command -v pip >/dev/null 2>&1; then
+        missing+=("python3-pip")
+        probe_log+="    → will install python3-pip\n"
+    else
+        probe_log+="    ✓ pip already present\n"
     fi
-    ok "APT base prereqs installed"
 
-    # Forensics extras gated on WITH_FORENSICS — keeps CI / minimal installs
-    # lightweight. Zeek and bulk-extractor often live outside Ubuntu main:
-    # we attempt them with `|| warn` so failure doesn't abort install.
+    # Base utilities
+    local util
+    for util in git curl jq unzip; do
+        if command -v "$util" >/dev/null 2>&1; then
+            probe_log+="    ✓ $util already present\n"
+        else
+            missing+=("$util")
+            probe_log+="    → will install $util\n"
+        fi
+    done
+
+    # libmagic — `file` is the probe. Ubuntu 24.04 ships libmagic1t64 (the
+    # 64-bit time_t transition), earlier releases ship libmagic1. We request
+    # libmagic1 and let apt resolve the alias.
+    if command -v file >/dev/null 2>&1; then
+        probe_log+="    ✓ libmagic (file binary) already present\n"
+    else
+        missing+=("libmagic1")
+        probe_log+="    → will install libmagic1 (apt may substitute libmagic1t64 on 24.04)\n"
+    fi
+
+    if ! dpkg -s ca-certificates >/dev/null 2>&1; then
+        missing+=("ca-certificates")
+        probe_log+="    → will install ca-certificates\n"
+    fi
+
+    echo -en "$probe_log"
+
+    if (( ${#missing[@]} == 0 )); then
+        ok "all base APT prereqs already installed — skipping apt-get install"
+    else
+        info "installing missing base packages: ${missing[*]}"
+        if ! run_root apt-get install -y --no-install-recommends "${missing[@]}"; then
+            fail "APT install failed for: ${missing[*]}"
+            exit 1
+        fi
+        ok "APT base prereqs installed"
+    fi
+
+    # ─── Forensics phase (probe-first, same pattern) ──────────────────────
     if (( WITH_FORENSICS )); then
-        info "APT forensics extras: yara sleuthkit tshark binwalk"
-        if ! run_root apt-get install -y --no-install-recommends \
-                yara libyara-dev sleuthkit tshark binwalk; then
-            warn "APT forensics partial/failed — some Python forensics deps may fail to build"
+        info "APT forensics extras — probing dependencies first"
+        local forensics_missing=()
+        local forensics_log=""
+
+        if command -v yara >/dev/null 2>&1; then
+            forensics_log+="    ✓ yara already present\n"
+        else
+            forensics_missing+=("yara" "libyara-dev")
+            forensics_log+="    → will install yara + libyara-dev\n"
         fi
-        # Best-effort optional forensics packages. Zeek lives in its own repo
-        # on Ubuntu, bulk-extractor is often in universe — warn-only.
-        run_root apt-get install -y --no-install-recommends zeek bulk-extractor 2>/dev/null \
-            || warn "zeek / bulk-extractor not in default repos — manual install if needed"
-        ok "APT forensics prereqs attempted"
+
+        # `fls` is the canonical probe for sleuthkit (it's invoked by the
+        # tsk_fls MCP tool).
+        if command -v fls >/dev/null 2>&1; then
+            forensics_log+="    ✓ sleuthkit (fls) already present\n"
+        else
+            forensics_missing+=("sleuthkit")
+            forensics_log+="    → will install sleuthkit\n"
+        fi
+
+        if command -v tshark >/dev/null 2>&1; then
+            forensics_log+="    ✓ tshark already present\n"
+        else
+            forensics_missing+=("tshark")
+            forensics_log+="    → will install tshark\n"
+        fi
+
+        if command -v binwalk >/dev/null 2>&1; then
+            forensics_log+="    ✓ binwalk already present\n"
+        else
+            forensics_missing+=("binwalk")
+            forensics_log+="    → will install binwalk\n"
+        fi
+
+        echo -en "$forensics_log"
+
+        if (( ${#forensics_missing[@]} == 0 )); then
+            ok "all forensics APT prereqs already installed — skipping"
+        else
+            info "installing missing forensics packages: ${forensics_missing[*]}"
+            if ! run_root apt-get install -y --no-install-recommends "${forensics_missing[@]}"; then
+                warn "APT forensics partial/failed — some Python forensics deps may fail to build"
+            fi
+        fi
+
+        # Optional extras — probe first, warn-only on apt failure.
+        if ! command -v zeek >/dev/null 2>&1 && ! command -v bro >/dev/null 2>&1; then
+            run_root apt-get install -y --no-install-recommends zeek 2>/dev/null \
+                || warn "zeek not in default repos — manual: https://docs.zeek.org/en/master/install.html"
+        fi
+        if ! command -v bulk_extractor >/dev/null 2>&1; then
+            run_root apt-get install -y --no-install-recommends bulk-extractor 2>/dev/null \
+                || warn "bulk-extractor not in default repos — manual: https://github.com/simsong/bulk_extractor"
+        fi
     fi
 }
 
 install_dnf_prereqs() {
-    info "DNF prereqs (Fedora/RHEL family — best-effort)"
+    info "DNF prereqs (Fedora/RHEL family) — probing dependencies first"
     if ! check_sudo_or_root; then
         warn "DNF install needs sudo or root — skipping (pip steps will still try)"
         return 0
     fi
-    # Base: python + system utils. Forensics extras (yara, sleuthkit, wireshark,
-    # binwalk) gated on WITH_FORENSICS to avoid surprise on users who only
-    # want Windows / Linux text-artifact triage.
-    run_root dnf install -y python3.11 python3-pip git curl jq unzip file-libs || \
-        warn "DNF base install partial/failed — continuing"
+
+    local missing=()
+    local probe_log=""
+
+    # Python: same probe pattern as apt. Fedora ships python3.12/3.13 in
+    # current releases; RHEL 9 ships python3.11.
+    local have_python="" py_pkg=""
+    for cand in python3.13 python3.12 python3.11; do
+        if command -v "$cand" >/dev/null 2>&1; then
+            have_python="$cand"
+            probe_log+="    ✓ $cand already on PATH\n"
+            break
+        fi
+    done
+    if [[ -z "$have_python" ]]; then
+        for cand in python3.13 python3.12 python3.11; do
+            if dnf list --quiet "$cand" >/dev/null 2>&1; then
+                py_pkg="$cand"; break
+            fi
+        done
+        if [[ -z "$py_pkg" ]]; then
+            warn "no python3.11+ available in dnf repos — manual install required"
+        else
+            missing+=("$py_pkg")
+            probe_log+="    → will install $py_pkg\n"
+        fi
+    fi
+
+    if ! command -v pip3 >/dev/null 2>&1 && ! command -v pip >/dev/null 2>&1; then
+        missing+=("python3-pip")
+        probe_log+="    → will install python3-pip\n"
+    fi
+    for util in git curl jq unzip; do
+        if ! command -v "$util" >/dev/null 2>&1; then
+            missing+=("$util")
+            probe_log+="    → will install $util\n"
+        else
+            probe_log+="    ✓ $util already present\n"
+        fi
+    done
+    if ! command -v file >/dev/null 2>&1; then
+        missing+=("file-libs")
+        probe_log+="    → will install file-libs\n"
+    fi
+
+    echo -en "$probe_log"
+
+    if (( ${#missing[@]} == 0 )); then
+        ok "all base DNF prereqs already installed — skipping dnf install"
+    else
+        info "installing missing base packages: ${missing[*]}"
+        run_root dnf install -y "${missing[@]}" || \
+            warn "DNF base install partial/failed — continuing"
+    fi
+
     if (( WITH_FORENSICS )); then
-        info "DNF forensics extras: yara sleuthkit wireshark-cli binwalk"
-        run_root dnf install -y yara yara-devel sleuthkit wireshark-cli binwalk || \
-            warn "DNF forensics partial/failed — some Python forensics deps may fail to build"
+        info "DNF forensics extras — probing"
+        local forensics_missing=()
+        command -v yara >/dev/null 2>&1 || forensics_missing+=("yara" "yara-devel")
+        command -v fls >/dev/null 2>&1 || forensics_missing+=("sleuthkit")
+        command -v tshark >/dev/null 2>&1 || forensics_missing+=("wireshark-cli")
+        command -v binwalk >/dev/null 2>&1 || forensics_missing+=("binwalk")
+        if (( ${#forensics_missing[@]} == 0 )); then
+            ok "all forensics DNF prereqs already installed"
+        else
+            info "installing missing forensics packages: ${forensics_missing[*]}"
+            run_root dnf install -y "${forensics_missing[@]}" || \
+                warn "DNF forensics partial/failed — some Python forensics deps may fail to build"
+        fi
     fi
     ok "DNF prereqs attempted"
 }
@@ -310,7 +484,7 @@ install_dnf_prereqs() {
 # Once brew is present, we install everything non-interactively.
 
 install_brew_prereqs() {
-    info "macOS prereqs via Homebrew"
+    info "macOS prereqs via Homebrew — probing dependencies first"
 
     if ! command -v brew >/dev/null 2>&1; then
         fail "Homebrew not found."
@@ -324,38 +498,118 @@ install_brew_prereqs() {
 
     ok "brew — $(command -v brew)"
 
-    # Base set: python + system utils. Always installed on macOS path.
-    local base_pkgs=(python@3.12 git curl jq libmagic)
-    info "brew install (base): ${base_pkgs[*]}"
-    if ! brew install "${base_pkgs[@]}" 2>&1 | grep -E '^(==>|Error)' | head -20; then
-        # brew install returns 0 even on "already installed"; suppress noise
-        true
-    fi
-    ok "base brew prereqs installed (or already present)"
+    # ─── Probe phase ──────────────────────────────────────────────────────
+    local missing=()
+    local probe_log=""
 
-    # Forensics set: gated on flag. Wireshark on macOS is a full GUI cask
-    # (~250 MB) — we install the lighter `wireshark` formula which provides
-    # tshark only. zeek is available as a formula. bulk_extractor is NOT in
-    # core Homebrew — warn-only with manual link.
+    # Python: existing 3.11+ on PATH satisfies. Otherwise install
+    # python@3.12 (Homebrew's default formula for current Python).
+    if command -v python3.13 >/dev/null 2>&1; then
+        probe_log+="    ✓ python3.13 already on PATH\n"
+    elif command -v python3.12 >/dev/null 2>&1; then
+        probe_log+="    ✓ python3.12 already on PATH\n"
+    elif command -v python3.11 >/dev/null 2>&1; then
+        probe_log+="    ✓ python3.11 already on PATH\n"
+    else
+        missing+=("python@3.12")
+        probe_log+="    → will brew install python@3.12\n"
+    fi
+
+    local util
+    for util in git curl jq; do
+        if command -v "$util" >/dev/null 2>&1; then
+            probe_log+="    ✓ $util already present\n"
+        else
+            missing+=("$util")
+            probe_log+="    → will brew install $util\n"
+        fi
+    done
+
+    # libmagic — `file` is the system probe. macOS ships `file` by default
+    # but Python's python-magic needs the Homebrew libmagic dylib at runtime.
+    if brew list libmagic >/dev/null 2>&1; then
+        probe_log+="    ✓ libmagic already installed via brew\n"
+    else
+        missing+=("libmagic")
+        probe_log+="    → will brew install libmagic (needed by python-magic)\n"
+    fi
+
+    echo -en "$probe_log"
+
+    if (( ${#missing[@]} == 0 )); then
+        ok "all base brew prereqs already installed — skipping brew install"
+    else
+        info "brew install (base): ${missing[*]}"
+        brew install "${missing[@]}" 2>&1 | grep -E '^(==>|Error|Warning)' | head -20 || true
+        ok "base brew prereqs installed"
+    fi
+
+    # ─── Forensics phase (probe-first) ────────────────────────────────────
     if (( WITH_FORENSICS )); then
-        local forensics_pkgs=(yara sleuthkit wireshark zeek binwalk)
-        info "brew install (forensics): ${forensics_pkgs[*]}"
-        info "  (this can take 5–15 min on first run; brew compiles some deps)"
-        if ! brew install "${forensics_pkgs[@]}" 2>&1 | grep -E '^(==>|Error)' | head -30; then
-            true
-        fi
-        ok "forensics brew prereqs installed (or already present)"
+        info "brew forensics extras — probing"
+        local forensics_missing=()
+        local forensics_log=""
 
+        if command -v yara >/dev/null 2>&1; then
+            forensics_log+="    ✓ yara already present\n"
+        else
+            forensics_missing+=("yara")
+            forensics_log+="    → will brew install yara\n"
+        fi
+
+        # `fls` is the canonical sleuthkit probe.
+        if command -v fls >/dev/null 2>&1; then
+            forensics_log+="    ✓ sleuthkit (fls) already present\n"
+        else
+            forensics_missing+=("sleuthkit")
+            forensics_log+="    → will brew install sleuthkit\n"
+        fi
+
+        # `wireshark` formula on macOS ships tshark.
+        if command -v tshark >/dev/null 2>&1; then
+            forensics_log+="    ✓ tshark already present\n"
+        else
+            forensics_missing+=("wireshark")
+            forensics_log+="    → will brew install wireshark (provides tshark)\n"
+        fi
+
+        if command -v zeek >/dev/null 2>&1; then
+            forensics_log+="    ✓ zeek already present\n"
+        else
+            forensics_missing+=("zeek")
+            forensics_log+="    → will brew install zeek\n"
+        fi
+
+        if command -v binwalk >/dev/null 2>&1; then
+            forensics_log+="    ✓ binwalk already present\n"
+        else
+            forensics_missing+=("binwalk")
+            forensics_log+="    → will brew install binwalk\n"
+        fi
+
+        echo -en "$forensics_log"
+
+        if (( ${#forensics_missing[@]} == 0 )); then
+            ok "all forensics brew prereqs already installed — skipping"
+        else
+            info "brew install (forensics): ${forensics_missing[*]}"
+            info "  (this can take 5–15 min on first run; brew compiles some deps)"
+            brew install "${forensics_missing[@]}" 2>&1 | grep -E '^(==>|Error|Warning)' | head -30 || true
+            ok "forensics brew prereqs installed"
+        fi
+
+        # bulk_extractor is not in core Homebrew — warn-only.
         if ! command -v bulk_extractor >/dev/null 2>&1; then
-            warn "bulk_extractor not in core Homebrew."
-            warn "  Optional manual install: https://github.com/simsong/bulk_extractor#installing"
+            warn "bulk_extractor not in core Homebrew"
+            warn "  optional manual install: https://github.com/simsong/bulk_extractor#installing"
         fi
     fi
 
-    # node + claude CLI handled by install_node_and_claude_cli; we install
-    # node here via brew so that helper finds it instead of warning "install
-    # via brew install node@18 manually".
-    if ! command -v node >/dev/null 2>&1; then
+    # node: required by install_node_and_claude_cli to install the claude CLI.
+    # Probe first to skip if user already has it (via nvm, asdf, system).
+    if command -v node >/dev/null 2>&1; then
+        info "node $(node --version 2>&1) already on PATH — skipping brew install node"
+    else
         info "brew install node"
         brew install node 2>&1 | grep -E '^(==>|Error)' | head -10 || true
         ok "node installed via brew"
