@@ -234,9 +234,28 @@ cmd_init() {
         info "    Install Claude Code: https://docs.claude.com/en/docs/claude-code/quickstart"
     fi
 
+    # Create or repair the venv. A common Debian/Ubuntu pitfall: if
+    # python3.X-venv wasn't installed when the venv was first created, the
+    # resulting venv has no pip (`python -m venv` silently skipped ensurepip).
+    # Detect that and rebuild — otherwise every later pip call fails with
+    # "No module named pip" against a venv that LOOKS present.
     if [[ ! -x "$MH_PY" ]]; then
         info "Creating venv at $MH_VENV"
         "$PY" -m venv "$MH_VENV"
+    elif ! "$MH_PY" -m pip --version >/dev/null 2>&1; then
+        warn "existing venv at $MH_VENV has no pip — rebuilding"
+        warn "  (this happens when python3.X-venv was installed AFTER the first init)"
+        rm -rf "$MH_VENV"
+        "$PY" -m venv "$MH_VENV"
+    fi
+
+    # Final guard: if ensurepip still didn't bootstrap pip into the new venv
+    # (rare — broken python3.X-venv package), surface the failure loudly
+    # rather than letting the next pip call produce a cryptic error.
+    if ! "$MH_PY" -m pip --version >/dev/null 2>&1; then
+        fail "venv created but pip not available — try: $PY -m ensurepip --default-pip"
+        fail "  or reinstall: sudo apt install --reinstall ${PY}-venv"
+        return 1
     fi
 
     info "Installing protocol_sift_mcp (core + dev)"
