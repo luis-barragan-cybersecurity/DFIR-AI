@@ -7,6 +7,7 @@ correct OS-specialist subagent without ambiguity.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -254,10 +255,77 @@ def hex_inspect(path: str, offset: int, length: int) -> str:
         return f.read(length).hex()
 
 
-def sqlite_query(db_path: str, query: str) -> list[dict[str, Any]]:
-    """TODO(W2): Read-only SQLite query (SELECT only enforced)."""
-    _ = assert_input_path(db_path)
-    raise NotImplementedError("sqlite_query — implement W2")
+class SqliteToolError(Exception):
+    """Boundary error for sqlite_query — connect / query / iteration failures."""
+
+
+def sqlite_query(
+    db_path: str,
+    query: str,
+    *,
+    params: tuple[Any, ...] | list[Any] | None = None,
+    limit: int = 10_000,
+) -> list[dict[str, Any]]:
+    """Read-only SQLite query against an evidence DB file.
+
+    Used for Chrome/Edge/Firefox history, ActivitiesCache.db, WhatsApp/Signal
+    chat DBs, places.sqlite, photos.sqlite, and any other SQLite-backed
+    artifact. Mirrors the safety contract of mac_knowledgec_query.
+
+    Args:
+        db_path: path under /input to a .sqlite/.db file
+        query: SQL statement. MUST start with SELECT or WITH (case-insensitive).
+        params: optional parameter tuple/list for ?-substitution in query.
+        limit: max rows returned (default 10k; query LIMIT clause still wins
+            if smaller).
+
+    Returns:
+        list of row dicts (column-name → value). Bytes are hex-coerced for
+        JSON safety; sqlite3.Row date/datetime values pass through to _coerce.
+
+    Raises:
+        SandboxViolation if path escapes /input.
+        SqliteToolError on connect/query failure.
+        ValueError on non-SELECT/WITH queries.
+    """
+    p = assert_input_path(db_path)
+    stripped = query.strip().lower()
+    if not (stripped.startswith("select") or stripped.startswith("with")):
+        raise ValueError("Only SELECT / WITH queries allowed")
+    if limit <= 0 or limit > 1_000_000:
+        raise ValueError("limit must be 1..1_000_000")
+
+    try:
+        # mode=ro — read-only. immutable=1 — promises caller won't change the
+        # file, lets sqlite skip journal/WAL recovery, useful when reading
+        # detached evidence DBs (Chrome History etc. with no -wal/-journal).
+        conn = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True)
+    except sqlite3.Error as exc:
+        raise SqliteToolError(f"Failed to open {p.name}: {exc}") from exc
+
+    try:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        try:
+            cur.execute(query, tuple(params or ()))
+            rows = cur.fetchmany(limit)
+        except sqlite3.Error as exc:
+            raise SqliteToolError(f"Query failed: {exc}") from exc
+        return [{k: _coerce_value(row[k]) for k in row.keys()} for row in rows]
+    finally:
+        conn.close()
+
+
+def _coerce_value(v: Any) -> Any:
+    """Reduce SQLite values to JSON-safe form. Mirrors macos._coerce."""
+    if isinstance(v, (bytes, bytearray)):
+        return v.hex()
+    if hasattr(v, "isoformat"):
+        try:
+            return v.isoformat()
+        except Exception:  # noqa: S110, BLE001 — fall through to repr if isoformat broken
+            pass
+    return v
 
 
 class YaraToolError(Exception):
