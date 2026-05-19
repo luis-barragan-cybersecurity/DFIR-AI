@@ -376,7 +376,7 @@ def _filetime_to_iso(ft: int) -> str | None:
     try:
         # 11644473600 seconds between 1601 and 1970 epoch
         ts = ft / 10_000_000 - 11644473600
-        return _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).isoformat()
+        return _dt.datetime.fromtimestamp(ts, tz=_dt.UTC).isoformat()
     except (OSError, OverflowError, ValueError):
         return None
 
@@ -437,7 +437,7 @@ def _decode_shell_item(blob: bytes) -> dict[str, Any]:
             try:
                 ansi = blob[14:].split(b"\x00", 1)[0]
                 out["name"] = ansi.decode("latin-1", errors="replace")
-            except Exception:  # noqa: BLE001 — best-effort fallback
+            except Exception:  # noqa: BLE001, S110 — best-effort ANSI name fallback; not logging keeps the row JSON-shaped
                 pass
     return out
 
@@ -471,7 +471,7 @@ def win_shellbag_parse(hive_path: str) -> list[dict[str, Any]]:
         try:
             ts = key.timestamp()
             last_write = ts.isoformat() if ts else None
-        except Exception:  # noqa: BLE001 — timestamp may be unavailable on some hives
+        except Exception:  # noqa: BLE001, S110 — timestamp may be unavailable on some hives
             pass
 
         # Numbered subkeys hold deeper folders. Numbered VALUES hold shell items.
@@ -489,7 +489,7 @@ def win_shellbag_parse(hive_path: str) -> list[dict[str, Any]]:
                             "last_write": last_write,
                             **decoded,
                         })
-                except Exception:  # noqa: BLE001 — skip unparseable entries, never crash
+                except Exception:  # noqa: BLE001, S112 — skip unparseable entries, never crash the whole walk
                     continue
 
         for sub in key.subkeys():
@@ -498,7 +498,7 @@ def win_shellbag_parse(hive_path: str) -> list[dict[str, Any]]:
     for root_path in _SHELLBAG_PATHS:
         try:
             key = reg.open(root_path)
-        except Exception:  # noqa: BLE001 — most hives only have one of these
+        except Exception:  # noqa: BLE001, S112 — most hives only have one of these three BagMRU roots
             continue
         walk(key, root_path)
 
