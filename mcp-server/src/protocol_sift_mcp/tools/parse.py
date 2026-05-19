@@ -255,6 +255,145 @@ def hex_inspect(path: str, offset: int, length: int) -> str:
         return f.read(length).hex()
 
 
+class PeToolError(Exception):
+    """Boundary error for pe_inspect — pefile missing or PE parse failure."""
+
+
+def _import_pefile() -> Any:
+    """Lazy-import pefile so module load works without [forensics] installed."""
+    try:
+        import pefile as _pefile  # type: ignore
+    except ImportError as exc:
+        raise PeToolError(
+            "pefile not installed. "
+            "Install via the [forensics] extra: `pip install 'protocol-sift-mcp[forensics]'`."
+        ) from exc
+    return _pefile
+
+
+def pe_inspect(path: str, *, max_section_data: int = 0) -> dict[str, Any]:
+    """Inspect a Windows PE (Portable Executable) file.
+
+    Extracts the DOS header, COFF header, optional header (image base, entry
+    point, subsystem, characteristics), sections (name, size, virtual address,
+    entropy), imports (DLL → function names), and exports. Static analysis
+    primitive covering .exe, .dll, .sys, .scr, drivers, and any PE format.
+
+    Args:
+        path: path under /input to a PE file
+        max_section_data: if >0, include this many bytes of raw section data
+            per section as hex (capped at 4 KiB/section). Default 0 (omit).
+
+    Returns:
+        Structured dict with: file (path/size/md5/sha256), dos, coff, opt,
+        sections, imports, exports, indicators (suspicious-flag rollup).
+
+    Raises:
+        SandboxViolation if path escapes /input.
+        PeToolError on missing pefile or malformed PE.
+    """
+    p = assert_input_path(path)
+    if max_section_data < 0 or max_section_data > 4096:
+        raise ValueError("max_section_data must be 0..4096")
+
+    pefile = _import_pefile()
+    try:
+        pe = pefile.PE(str(p), fast_load=False)
+    except Exception as exc:  # noqa: BLE001 — pefile raises many concrete types
+        raise PeToolError(f"Failed to parse PE {p.name}: {exc}") from exc
+
+    import hashlib
+    raw_bytes = p.read_bytes()
+    md5 = hashlib.md5(raw_bytes, usedforsecurity=False).hexdigest()
+    sha256 = hashlib.sha256(raw_bytes).hexdigest()
+
+    dos = {
+        "magic": f"0x{pe.DOS_HEADER.e_magic:04x}",
+        "lfanew": pe.DOS_HEADER.e_lfanew,
+    }
+    coff = {
+        "machine": f"0x{pe.FILE_HEADER.Machine:04x}",
+        "number_of_sections": pe.FILE_HEADER.NumberOfSections,
+        "timestamp": pe.FILE_HEADER.TimeDateStamp,
+        "characteristics": f"0x{pe.FILE_HEADER.Characteristics:04x}",
+    }
+    opt = {
+        "magic": f"0x{pe.OPTIONAL_HEADER.Magic:04x}",  # 0x10b=32-bit, 0x20b=64-bit
+        "image_base": f"0x{pe.OPTIONAL_HEADER.ImageBase:x}",
+        "entry_point": f"0x{pe.OPTIONAL_HEADER.AddressOfEntryPoint:x}",
+        "subsystem": pe.OPTIONAL_HEADER.Subsystem,
+        "dll_characteristics": f"0x{pe.OPTIONAL_HEADER.DllCharacteristics:04x}",
+        "size_of_image": pe.OPTIONAL_HEADER.SizeOfImage,
+    }
+
+    sections: list[dict[str, Any]] = []
+    for s in pe.sections:
+        try:
+            name = s.Name.rstrip(b"\x00").decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            name = "?"
+        entry: dict[str, Any] = {
+            "name": name,
+            "virtual_address": f"0x{s.VirtualAddress:x}",
+            "virtual_size": s.Misc_VirtualSize,
+            "raw_size": s.SizeOfRawData,
+            "characteristics": f"0x{s.Characteristics:08x}",
+            "entropy": round(s.get_entropy(), 3),
+        }
+        if max_section_data:
+            try:
+                entry["data_hex"] = s.get_data()[:max_section_data].hex()
+            except Exception:  # noqa: BLE001, S110 — section may be unreadable; non-blocking
+                entry["data_hex"] = ""
+        sections.append(entry)
+
+    imports: list[dict[str, Any]] = []
+    if hasattr(pe, "DIRECTORY_ENTRY_IMPORT"):
+        for entry in pe.DIRECTORY_ENTRY_IMPORT:
+            dll = entry.dll.decode("utf-8", errors="replace") if entry.dll else "?"
+            funcs: list[str] = []
+            for imp in entry.imports:
+                if imp.name:
+                    funcs.append(imp.name.decode("utf-8", errors="replace"))
+                elif imp.ordinal:
+                    funcs.append(f"#ord{imp.ordinal}")
+            imports.append({"dll": dll, "functions": funcs})
+
+    exports: list[str] = []
+    if hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
+        for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+            if exp.name:
+                exports.append(exp.name.decode("utf-8", errors="replace"))
+            elif exp.ordinal is not None:
+                exports.append(f"#ord{exp.ordinal}")
+
+    high_entropy_sections = [s["name"] for s in sections if s["entropy"] > 7.0]
+    indicators = {
+        "high_entropy_sections": high_entropy_sections,  # >7.0 suggests packing/encryption
+        "is_64bit": opt["magic"] == "0x20b",
+        "is_dll": bool(pe.FILE_HEADER.Characteristics & 0x2000),  # IMAGE_FILE_DLL
+        "is_signed_hint": False,  # full sig validation = separate code path; signal stays False
+        "import_count": sum(len(i["functions"]) for i in imports),
+        "export_count": len(exports),
+    }
+
+    return {
+        "file": {
+            "path": str(p),
+            "size": p.stat().st_size,
+            "md5": md5,
+            "sha256": sha256,
+        },
+        "dos": dos,
+        "coff": coff,
+        "opt": opt,
+        "sections": sections,
+        "imports": imports,
+        "exports": exports,
+        "indicators": indicators,
+    }
+
+
 class SqliteToolError(Exception):
     """Boundary error for sqlite_query — connect / query / iteration failures."""
 
