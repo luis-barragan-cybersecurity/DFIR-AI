@@ -7,6 +7,35 @@ description: Convert structured verified findings into investigative prose suita
 
 Hackathon rules require: "output is presented as a structured investigative narrative, not a raw execution log."
 
+## Actor Attribution Rule — READ FIRST (MANDATORY)
+
+**Before writing the Executive Summary or Threat Actor Behavior section, check `/output/audit.jsonl` for the `threat_model` event written by `triage-orchestrator`.** That event names the actor and the victim. Use it.
+
+If the event is present, follow this attribution table:
+
+| `threat_model.shape` | Actor in narrative | Victim in narrative |
+|---|---|---|
+| `external-physical` | "the intruder" or "unauthorized physical actor" — never the local user account name | The local user account; explicitly state they are the **victim** |
+| `external-remote` | "the threat actor" / named malware family / "the compromised credentials operator" | The local user account; explicitly state credentials were compromised |
+| `insider-threat` | The local user account name (e.g. "Fred Rocba") | The organization / co-workers / data owners |
+
+If the `threat_model` event is **absent**, the narrative MUST default to neutral framing: "the active session under user account X performed Y" — NOT "X (the user) performed Y". Without explicit threat model the agent has not earned the right to attribute intent.
+
+### Forbidden framings (categorical failures)
+
+Each of these has shipped a misattributed report before and is now an automatic-reject:
+
+| ❌ Forbidden in `external-*` cases | ✅ Correct |
+|---|---|
+| "This is a textbook insider-threat exfil scenario" | "The 2020-11-13 evening EDT break-in window shows intruder activity through Fred Rocba's logged-in session" |
+| "Fred pulled files from co-worker OneDrive folders" | "The intruder, operating through Fred's session, accessed co-worker OneDrive folders" |
+| "Disable [victim user]'s tenant account" | "Rotate [victim user]'s session tokens; revoke share links from the compromise window; physical-security review" |
+| "Trusted user pulling intellectual-property documents" | "Files accessed via [user]'s session during the compromise window; user was [in Florida / phished / not present] per case brief" |
+
+### Timing correlation in attribution
+
+When the `threat_model.compromise_window` is set, every activity claim in the Threat Actor Behavior section MUST be bracketed against it: "X events occurred inside the compromise window (intruder-attributed) and Y outside (legitimate user activity)." If you cannot recover per-event timestamps for an artifact, say so — do NOT assume "captured in this image = happened during compromise window."
+
 ## Required Structure
 
 The report has TWO audiences and MUST serve both:

@@ -101,7 +101,15 @@ ALLOWED_PLUGINS: frozenset[str] = frozenset(
     }
 )
 
-DEFAULT_TIMEOUT_SEC = 300
+# Volatility full-image scan plugins (windows.netscan, windows.psscan,
+# windows.malfind, windows.filescan) legitimately take 10-30 min per plugin
+# on a 19GB+ memory image. The previous 300s default caused the Rocba case
+# (2026-05) to time out four of the highest-signal plugins, blocking live
+# network endpoint enumeration and hidden-process discovery and forcing a
+# GAP-01 entry in accuracy-report.md. 1800s (30 min) covers the slowest
+# plugin we've measured against the SANS test corpus; callers running on
+# images >25GB should pass timeout_sec=3600 explicitly.
+DEFAULT_TIMEOUT_SEC = 1800
 
 
 class MemoryToolError(Exception):
