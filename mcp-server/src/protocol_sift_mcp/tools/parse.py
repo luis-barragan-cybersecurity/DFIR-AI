@@ -174,6 +174,8 @@ def os_detect(path: str) -> dict[str, Any]:
             ".tracev3": ("macos", "Unified Logs archive extension"),
             ".dmp": ("memory_dump", "raw memory dump extension"),
             ".vmem": ("memory_dump", "VMware memory snapshot extension"),
+            ".raw": ("memory_dump", "raw memory image extension"),
+            ".mem": ("memory_dump", "raw memory dump extension"),
             ".lime": ("linux", "LiME memory dump extension"),
             ".aff": ("memory_dump", "Advanced Forensic Format"),
             ".e01": ("filesystem_image", "EnCase image format"),

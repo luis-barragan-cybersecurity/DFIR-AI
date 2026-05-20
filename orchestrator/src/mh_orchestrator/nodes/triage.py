@@ -11,10 +11,17 @@ from ..state import IncidentState
 NODE_NAME = "triage"
 
 # Map _detected_os → subagent name (per .claude/agents/*.md frontmatter)
+# memory_dump routes to WindowsAgent because WindowsAgent already has
+# memory_volatility in its tool allowlist + its prompt has an explicit
+# "For memory dumps, additionally apply memory-forensics skill" clause.
+# This avoids creating a separate MemoryAgent that would duplicate that
+# tool surface; it also means a memory-only case (no registry/EVTX) flows
+# correctly through windows-triage skill → memory-forensics skill fallback.
 OS_TO_SUBAGENT = {
     "windows": "WindowsAgent",
     "macos": "MacOSAgent",
     "linux": "LinuxAgent",
+    "memory_dump": "WindowsAgent",
     "unknown": "WindowsAgent",  # Fallback; real triage would refuse
 }
 

@@ -145,6 +145,25 @@ def test_os_detect_extension_only_low_confidence(
     assert any(s["source"] == "extension" for s in result["signals"])
 
 
+def test_os_detect_raw_memory_extension_classified_as_memory_dump(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: rocba-memory case shipped a Rocba-Memory.raw image and the
+    pipeline produced zero findings because .raw was missing from ext_map →
+    os_detect returned 'unknown' → triage routed to WindowsAgent → evtx/registry
+    tools failed against raw bytes."""
+    indir = _evidence_dir(tmp_path, monkeypatch)
+    for name in ("Rocba-Memory.raw", "image.mem"):
+        f = indir / name
+        f.write_bytes(b"\x00" * 4096)
+        result = parse.os_detect(str(f))
+        assert result["os"] == "memory_dump", (
+            f"{name} should classify as memory_dump, got {result['os']!r}"
+        )
+        assert result["evidence_class"] == "memory_dump"
+        assert any(s["source"] == "extension" for s in result["signals"])
+
+
 def test_os_detect_unknown_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     indir = _evidence_dir(tmp_path, monkeypatch)
     f = indir / "random.bin"
