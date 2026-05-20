@@ -13,9 +13,37 @@ You CANNOT make a claim without an evidence pin. You CANNOT execute shell comman
 
 Every step you take is appended to `audit.jsonl` (plain append-only log). Tool calls are recorded by the PostToolUse hook automatically.
 
+## Threat Model — READ FIRST (MANDATORY)
+
+**Before any tool call beyond ingest, read `/input/_case-brief.md` if it exists.** The case brief encodes the threat model — *who* is the suspected actor and *who* is the victim. Most cases ship one of three shapes:
+
+| Threat-model shape | Trigger keywords in case brief | Actor attribution rule |
+|---|---|---|
+| **External — physical access** | "break-in", "intruder", "stolen device", "unauthorized physical access", "left logged in", "kiosk", "lab compromise" | The local user account on the host is the **VICTIM**, not the actor. Activity in the image during the named compromise window must be attributed to the intruder. Outside the window, attribute to the user normally. |
+| **External — remote compromise** | "credentials stolen", "phishing", "RAT", "C2", "malware infection", "RDP brute force", "unauthorized remote access" | The local user account is the **victim of credential theft**. Attribute malicious activity to the threat actor, not the user — even if the activity ran under the user's session. |
+| **Insider threat** | "data theft by employee", "departing employee", "policy violation", "no external compromise", "user is the subject" | Attribute activity to the local user account as the actor. Standard insider-threat narrative applies. |
+
+**Default if no `_case-brief.md` exists:** treat as insider threat (single-host case with no external-actor context). When in doubt, record a low-confidence finding that names BOTH the local user and "potential external actor — case context insufficient to disambiguate" and let the human reviewer decide.
+
+**Write a `threat_model` event to `audit.jsonl` immediately after reading the brief**, e.g.:
+```
+{"event": "threat_model", "data": {"shape": "external-physical", "victim": "fredr", "actor": "intruder", "compromise_window": "2020-11-13 22:00 EDT → 2020-11-14 06:00 EDT", "source": "_case-brief.md"}}
+```
+
+This event is read by `ir-narrative` when it composes the final story. If you skip this step, the narrative will default to "local user = actor" framing, which is a categorical failure on victim-of-compromise cases.
+
+## Timeline Correlation — Tier-1 ISC
+
+When the threat model names a **compromise window** (e.g. break-in evening 2020-11-13 EDT), every finding that names a timestamped artifact (download events, process creates, file writes, registry writes) MUST be bracketed against that window in its `confidence_rationale`. Phrasing:
+
+- `"… 36 of 48 downloads timestamped inside the 2020-11-13 22:00→2020-11-14 06:00 EDT compromise window — intruder-attributed"`
+- `"… 5 of 48 downloads timestamped 2020-11-03 → 2020-11-09 (Fred's pre-vacation work week) — user-attributed legitimate access"`
+
+If the artifact's timestamps cannot be recovered (cache file has no per-event timestamps), say so explicitly: `"timing-of-event-vs-compromise-window unknown — downloads3.txt cache does not preserve per-event timestamps"`. That keeps the gap honest instead of papering over it.
+
 ## Triage Workflow
 
-1. **Ingest** — the SessionStart hook hashes every artifact under `/input` and writes `evidence_ingest` events to the audit log before you start. Verify the audit log has one entry per artifact.
+1. **Ingest** — the SessionStart hook hashes every artifact under `/input` and writes `evidence_ingest` events to the audit log before you start. Verify the audit log has one entry per artifact. **Then read `/input/_case-brief.md` per the Threat Model rule above before continuing.**
 2. **OS Detection** — call `mcp__protocol_sift__os_detect` on each artifact. It returns `{os, version, confidence, signals}`. If confidence < 0.8, request a second signal before routing.
 3. **Route**:
    - Windows → invoke `windows-triage` skill (or spawn WindowsAgent subagent)

@@ -22,9 +22,22 @@ import pytest
 from protocol_sift_mcp import sandbox as _sandbox
 from protocol_sift_mcp.tools.memory import (
     ALLOWED_PLUGINS,
+    DEFAULT_TIMEOUT_SEC,
     MemoryToolError,
     memory_volatility,
 )
+
+
+def test_default_timeout_accommodates_large_image_scan_plugins():
+    """Regression: rocba case (19GB image) timed out 4 full-scan plugins at
+    the prior 300s default, blocking live network enumeration. The new
+    default must be high enough for windows.netscan / psscan / malfind /
+    filescan to complete on a 19GB+ image. Empirically these take 10-30 min
+    per plugin; 1800s is the floor."""
+    assert DEFAULT_TIMEOUT_SEC >= 1800, (
+        f"DEFAULT_TIMEOUT_SEC={DEFAULT_TIMEOUT_SEC} is too low for full-image scan plugins. "
+        "Bump to >= 1800 to avoid GAP-01-style accuracy losses on big-image cases."
+    )
 
 
 def _make_image(name: str = "memory.raw") -> Path:
