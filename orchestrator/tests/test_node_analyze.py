@@ -79,3 +79,35 @@ def test_analyze_writes_checkpoint(tmp_path: Path) -> None:
     analyze.run(s)
     assert (tmp_path / "state.json").exists()
     assert (tmp_path / "state.history.jsonl").exists()
+
+
+def test_memory_dump_explicit_route_not_fallback(tmp_path: Path) -> None:
+    """Regression: memory_dump used to land via FALLBACK_SUBAGENT and emit
+    a misleading 'analyze_unknown_os_fallback' audit event (rocba 2026-05-21
+    run). memory_dump must now be an explicit route — same target subagent
+    (WindowsAgent) but is_fallback=False so the audit reads cleanly."""
+    s = new_state("c")
+    s["_output_dir"] = str(tmp_path)
+    s["_detected_os"] = "memory_dump"
+    s = analyze.run(s)
+
+    audit_lines = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().strip().splitlines()]
+    has_fallback_event = any(e["event"] == "analyze_unknown_os_fallback" for e in audit_lines)
+    assert not has_fallback_event, (
+        "memory_dump should be an explicit route in OS_TO_SUBAGENT, "
+        "not the unknown-OS fallback path"
+    )
+
+    # And it should still dispatch to WindowsAgent (which has memory_volatility)
+    msgs = [json.loads(line) for line in (tmp_path / "agent_messages.jsonl").read_text().strip().splitlines()]
+    assert any(
+        m["from_agent"] == "orchestrator" and m["to_agent"] == "WindowsAgent"
+        for m in msgs
+    )
+
+
+def test_os_to_subagent_includes_memory_dump():
+    assert analyze.OS_TO_SUBAGENT.get("memory_dump") == "WindowsAgent", (
+        "memory_dump must route explicitly to WindowsAgent so the analyze prompt "
+        "can include the mandatory Volatility plugin sequence"
+    )
