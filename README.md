@@ -41,7 +41,7 @@ You get:     Pinned findings, investigative narrative, accuracy report,
 
 Two execution modes with the same trust contract:
 
-- **`mh run`** — free-form Claude Code session driven by the `triage-orchestrator` skill. Best for exploratory casework.
+- **`mh run --interactive`** — free-form Claude Code session driven by the `triage-orchestrator` skill. Best for exploratory casework.
 - **`mh orchestrate`** — deterministic LangGraph state machine walking the §11.2 14-IR-node topology. Best for repeatable, framework-aligned IR.
 
 ---
