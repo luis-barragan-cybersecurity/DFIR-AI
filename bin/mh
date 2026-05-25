@@ -412,16 +412,67 @@ EOF
         return 2
     fi
 
-    # ─── Auth + claude CLI gates ──────────────────────────────────────────
-    if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ ! -d "$HOME/.claude" ]]; then
-        fail "no Claude auth. Run: claude /login   OR   export ANTHROPIC_API_KEY=sk-ant-..."
+    # ─── Preflight: explicit pass/fail table so silent failures stop here ─
+    #
+    # Common silent-failure modes the previous one-liners hid:
+    #   - macOS user runs from a fresh clone, never ran `mh init` → no venv
+    #   - SIFT user runs from inside an existing Claude Code session (CLAUDECODE=1)
+    #     → nested `claude -p` calls inside triage/analyze nodes are blocked
+    #   - claude CLI missing or unauthed → fail at first LLM-invoking node
+    # Each row prints loud; first ✗ aborts with the exact fix command.
+    info "preflight:"
+    local pf_ok=1
+    if [[ -x "$MH_PY" ]]; then
+        ok "  python venv:        $MH_PY"
+    else
+        fail "  python venv missing at $MH_PY"
+        info "    fix:              ./bin/mh init"
+        pf_ok=0
+    fi
+    if [[ -x "${MH_VENV}/bin/mh-orchestrate" ]]; then
+        ok "  mh-orchestrate:     ${MH_VENV}/bin/mh-orchestrate"
+    else
+        fail "  mh-orchestrate not installed in venv"
+        info "    fix:              ./bin/mh init"
+        pf_ok=0
+    fi
+    if command -v claude >/dev/null 2>&1; then
+        ok "  claude CLI:         $(command -v claude)"
+    else
+        fail "  claude CLI not installed"
+        info "    install:          https://docs.claude.com/en/docs/claude-code/quickstart"
+        pf_ok=0
+    fi
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+        ok "  claude auth:        API key (\$ANTHROPIC_API_KEY set)"
+    elif [[ -d "$HOME/.claude" ]]; then
+        ok "  claude auth:        subscription (~/.claude present)"
+    else
+        fail "  claude not authed"
+        info "    fix (subscription): claude /login"
+        info "    fix (api key):    export ANTHROPIC_API_KEY=sk-ant-..."
+        pf_ok=0
+    fi
+    if [[ "${CLAUDECODE:-0}" == "1" ]]; then
+        fail "  CLAUDECODE=1 detected — running mh from inside another Claude Code session"
+        info "    why this matters: the triage/analyze/verifier_pass nodes shell out to"
+        info "                      'claude -p'; that nested call is blocked when CLAUDECODE=1"
+        info "                      and the pipeline will hang at the first LLM node."
+        info "    fix:              run mh from a plain terminal, OR:"
+        info "                      env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT \\"
+        info "                          -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_SESSION_ID \\"
+        info "                          ./bin/mh run ${case_id}"
+        info "    or for a dry-run with no LLM calls:"
+        info "                      MH_NO_CLAUDE=1 ./bin/mh run ${case_id}"
+        pf_ok=0
+    else
+        ok "  CLAUDECODE:         unset (nested claude calls will work)"
+    fi
+    if (( pf_ok == 0 )); then
+        fail "preflight failed — fix the ✗ rows above and re-run"
         return 1
     fi
-    if ! command -v claude >/dev/null 2>&1; then
-        fail "claude CLI not installed"
-        info "  install: https://docs.claude.com/en/docs/claude-code/quickstart"
-        return 1
-    fi
+    echo ""
 
     # ─── Fresh-cycle output dir ───────────────────────────────────────────
     if [[ -d "$output_dir" ]] && [[ -n "$(ls -A "$output_dir" 2>/dev/null)" ]]; then
@@ -438,6 +489,9 @@ EOF
     else
         info "auth:       Claude subscription (Pro/Max)"
     fi
+    if [[ "${MH_NO_CLAUDE:-0}" == "1" ]]; then
+        info "MH_NO_CLAUDE=1     stub mode — LLM nodes (triage/analyze/verifier_pass) return canned 'medium / agree' results in ms"
+    fi
 
     export CASE_ID="$case_id"
     export EVIDENCE_PATH="$input_dir"
@@ -453,13 +507,15 @@ EOF
         echo ""
         claude_run "Use the triage-orchestrator skill to autonomously triage every artifact under ${input_dir}. Route to the correct OS specialist (Windows/macOS/Linux). Pin every finding to its source tool + artifact. Acknowledge gaps explicitly via gap-acknowledgment. Stop when triage is complete. Write findings.json, narrative.md, and accuracy-report.md to ${output_dir}." || rc=$?
     else
-        info "mode:       LangGraph (deterministic full IR pipeline)"
+        info "mode:       LangGraph (deterministic full IR pipeline — 20 nodes)"
+        info "            live status streams below (timestamps + per-node durations)"
+        info "            slow nodes get a ⋯ heartbeat every 30s (MH_HEARTBEAT_SEC=N to tune)"
+        info "            Ctrl+C aborts cleanly; partial output stays in ${output_dir}/"
         echo ""
-        if [[ ! -x "${MH_VENV}/bin/mh-orchestrate" ]]; then
-            fail "mh-orchestrate not installed. Run: mh init"
-            return 1
-        fi
-        "${MH_VENV}/bin/mh-orchestrate" run "$case_id" --cases-dir "$MH_CASES_DIR" "${extra_args[@]}" || rc=$?
+        # Note: `"${extra_args[@]+"${extra_args[@]}"}"` (not just `"${extra_args[@]}"`)
+        # because macOS bash 3.2 + `set -u` errors on an empty `[@]` expansion.
+        # The `+` form expands to nothing when the array is empty — safe on bash 3.2+.
+        "${MH_VENV}/bin/mh-orchestrate" run "$case_id" --cases-dir "$MH_CASES_DIR" ${extra_args[@]+"${extra_args[@]}"} || rc=$?
     fi
 
     # ─── Surface results regardless of exit code ──────────────────────────
