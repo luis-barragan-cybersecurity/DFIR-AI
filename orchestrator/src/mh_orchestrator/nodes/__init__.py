@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -74,6 +75,17 @@ _GREEN = "\033[32m" if _USE_COLOR else ""
 _RED = "\033[31m" if _USE_COLOR else ""
 _RESET = "\033[0m" if _USE_COLOR else ""
 
+# Heartbeat: while a node runs, emit a "still running" line every N seconds so
+# users see progress on long claude-backed nodes (triage/analyze/verifier_pass
+# can take 30-600s). MH_HEARTBEAT_SEC=0 disables; MH_QUIET=1 silences via the
+# existing _print_status gate. Default 30s.
+try:
+    _HEARTBEAT_SEC = int(os.environ.get("MH_HEARTBEAT_SEC", "30"))
+except ValueError:
+    _HEARTBEAT_SEC = 30
+if _HEARTBEAT_SEC < 0:
+    _HEARTBEAT_SEC = 0
+
 
 def _fmt_duration(seconds: float) -> str:
     if seconds < 1.0:
@@ -99,12 +111,31 @@ def _wrap_with_progress(node_name: str, fn: Callable[[IncidentState], IncidentSt
     def wrapped(state: IncidentState) -> IncidentState:
         _print_status("▶", _CYAN, node_name, "(starting)")
         start = time.monotonic()
+        stop_heartbeat = threading.Event()
+        heartbeat_thread: threading.Thread | None = None
+        if _HEARTBEAT_SEC > 0:
+            def _heartbeat() -> None:
+                # Event.wait returns True if stop was signaled, False on timeout.
+                # First tick fires no earlier than _HEARTBEAT_SEC after start.
+                while not stop_heartbeat.wait(_HEARTBEAT_SEC):
+                    elapsed = _fmt_duration(time.monotonic() - start)
+                    _print_status("⋯", _DIM, node_name, f"still running ({elapsed} elapsed)")
+            heartbeat_thread = threading.Thread(
+                target=_heartbeat, name=f"mh-heartbeat-{node_name}", daemon=True,
+            )
+            heartbeat_thread.start()
         try:
             result = fn(state)
         except Exception as exc:  # noqa: BLE001 — re-raised after logging
+            stop_heartbeat.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=1.0)
             elapsed = _fmt_duration(time.monotonic() - start)
             _print_status("✗", _RED, node_name, f"FAILED after {elapsed}: {type(exc).__name__}: {exc}")
             raise
+        stop_heartbeat.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1.0)
         elapsed = _fmt_duration(time.monotonic() - start)
         _print_status("✓", _GREEN, node_name, f"done in {elapsed}")
         return result

@@ -13,7 +13,21 @@ def _detect_os_from_evidence(evidence_path: str) -> str:
     """Quick heuristic: scan filenames in evidence dir for OS markers.
     Real os_detect MCP tool is invoked by the LLM nodes; this is the
     deterministic stub used inline by the detect node and short-circuited
-    cleanly under MH_NO_CLAUDE=1."""
+    cleanly under MH_NO_CLAUDE=1.
+
+    Memory-dump branch is intentionally LAST so a case dir that contains
+    BOTH a memory image AND OS-specific artifacts (e.g. .raw + .evtx hives)
+    classifies as the OS — the OS-side artifacts are the higher-signal
+    triage target. A memory-only case (just .raw) falls through to
+    memory_dump → routed to WindowsAgent which has memory_volatility in
+    its tool allowlist (see triage.OS_TO_SUBAGENT).
+
+    Rocba case (2026-05) regressed because .raw was missing from this
+    heuristic: a 19GB Rocba-Memory.raw with no sibling OS artifacts
+    classified as 'unknown' → triage routed to WindowsAgent via the
+    fallback default → WindowsAgent tried win_evtx_query / win_registry_get
+    on raw bytes → 0 findings shipped to findings.json. The .raw / .mem /
+    .dmp / .vmem / .lime / .aff branch closes that gap."""
     p = Path(evidence_path)
     if not p.exists():
         return "unknown"
@@ -24,6 +38,8 @@ def _detect_os_from_evidence(evidence_path: str) -> str:
         return "macos"
     if any(m in names for m in ("auth.log", "syslog", ".bash_history")):
         return "linux"
+    if any(m in names for m in (".raw", ".mem", ".dmp", ".vmem", ".lime", ".aff")):
+        return "memory_dump"
     return "unknown"
 
 
