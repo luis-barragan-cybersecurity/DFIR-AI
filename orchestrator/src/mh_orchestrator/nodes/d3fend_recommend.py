@@ -26,9 +26,28 @@ def run(state: IncidentState) -> IncidentState:
     # Initialize recommendations field if missing (defensive)
     if "d3fend_recommendations" not in state:
         state["d3fend_recommendations"] = []
+    if "_compliance_gaps" not in state:
+        state["_compliance_gaps"] = []
 
     new_recs = lookup_all(state, techniques)
     state["d3fend_recommendations"].extend(new_recs)
+
+    # Honesty fix (#10): the crosswalk emits `d3fend_crosswalk_miss` audit
+    # events for techniques it can't map, but those misses never reached the
+    # operator-facing narrative or compliance map — the gap was silent. Track
+    # them on state so session_finalize can render an explicit
+    # "D3FEND coverage gaps" section in incident_summary.md.
+    covered_attack_ids = {r.attack_id_satisfied for r in new_recs if r.attack_id_satisfied}
+    for t in techniques:
+        if t not in covered_attack_ids and not any(
+            existing.get("technique_id") == t for existing in state["_compliance_gaps"]
+        ):
+            state["_compliance_gaps"].append({
+                "framework": "MITRE D3FEND",
+                "kind": "no_countermeasure_in_crosswalk",
+                "technique_id": t,
+                "note": "D3FEND crosswalk has no countermeasure mapping for this technique",
+            })
 
     state["phase"] = "analyze"
     picerl.advance_iso27035(state, picerl.picerl_phase_for("d3fend_recommend"))
@@ -38,7 +57,8 @@ def run(state: IncidentState) -> IncidentState:
         state, event="d3fend_recommend_complete",
         data={"techniques": list(techniques),
               "added_recommendations": len(new_recs),
-              "total_recommendations": len(state["d3fend_recommendations"])},
+              "total_recommendations": len(state["d3fend_recommendations"]),
+              "compliance_gaps": len(state["_compliance_gaps"])},
     )
     emit_message(
         state, from_agent="orchestrator", to_agent="orchestrator",

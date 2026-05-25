@@ -142,7 +142,11 @@ def _wrap_with_progress(node_name: str, fn: Callable[[IncidentState], IncidentSt
     return wrapped
 
 
-# §11.2 registry — 14 IR nodes plus session_init + session_finalize framing.
+# §11.2 registry — 20 nodes total: 14 core IR nodes (detect, triage,
+# declare_incident, analyze, attack_tag, kill_chain, d3fend_recommend, contain,
+# human_in_loop, eradicate, recover, lessons_learned, remediation, verifier_pass)
+# plus 6 framing/structural nodes (manifest_ingest, session_init, scope,
+# suppress, correlate, session_finalize).
 # Note: kill_chain_classify is registered as "kill_chain" and remediation_plan
 # is registered as "remediation" (graph-key names match the LangGraph nodes;
 # §11.4 phase mapping in picerl.NODE_TO_PICERL uses the longer descriptive

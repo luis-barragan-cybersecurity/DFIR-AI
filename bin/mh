@@ -124,13 +124,17 @@ cmd_doctor() {
         errors=$((errors + 1))
     fi
 
-    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        ok "ANTHROPIC_API_KEY set (auth mode: API key)"
-    elif [[ -d "$HOME/.claude" ]]; then
-        ok "~/.claude/ exists (auth mode: Pro/Max login likely active — run 'claude /status' to confirm)"
+    # Delegate Claude auth to the standalone validator script — single
+    # source of truth for both `mh doctor` and `mh run` preflight. Doctor
+    # uses --full (live probe) since the user explicitly asked for a health
+    # check.
+    if [[ -x "${MH_HOME}/scripts/check-claude-auth.sh" ]]; then
+        if ! "${MH_HOME}/scripts/check-claude-auth.sh" --full | sed 's/^/    /'; then
+            errors=$((errors + 1))
+        fi
     else
-        warn "No ANTHROPIC_API_KEY env var and no ~/.claude/ — auth not configured"
-        warn "    EITHER  export ANTHROPIC_API_KEY=sk-ant-...   OR   claude /login"
+        fail "scripts/check-claude-auth.sh missing or not executable — repo seems incomplete"
+        errors=$((errors + 1))
     fi
 
     if [[ -f "${MH_HOME}/.claude/settings.json" ]]; then
@@ -443,14 +447,16 @@ EOF
         info "    install:          https://docs.claude.com/en/docs/claude-code/quickstart"
         pf_ok=0
     fi
-    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        ok "  claude auth:        API key (\$ANTHROPIC_API_KEY set)"
-    elif [[ -d "$HOME/.claude" ]]; then
-        ok "  claude auth:        subscription (~/.claude present)"
-    else
-        fail "  claude not authed"
-        info "    fix (subscription): claude /login"
-        info "    fix (api key):    export ANTHROPIC_API_KEY=sk-ant-..."
+    # Claude auth: format check + live API probe (Tier A + Tier C). Costs
+    # ≈ $0.0000004 per `mh run` in API-key mode (one claude-haiku-4-5 call
+    # at max_tokens=1). Subscription mode pings via `claude -p` instead.
+    # Live probe is skipped automatically when CLAUDECODE=1 (the row below
+    # will hard-fail in that case anyway). See scripts/check-claude-auth.sh.
+    info "  claude auth check:"
+    local auth_check_rc=0
+    "${MH_HOME}/scripts/check-claude-auth.sh" --full 2>&1 | sed 's/^/    /' || true
+    auth_check_rc=${PIPESTATUS[0]:-0}
+    if (( auth_check_rc != 0 )); then
         pf_ok=0
     fi
     if [[ "${CLAUDECODE:-0}" == "1" ]]; then

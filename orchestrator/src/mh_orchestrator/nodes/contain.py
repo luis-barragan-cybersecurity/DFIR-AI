@@ -41,6 +41,13 @@ _DEFAULT_ACTION_FOR_TACTIC = {
 def _build_recommendations(state: IncidentState) -> list[dict]:
     user_n = _distinct_user_count(state)
     detected_os = state.get("_detected_os", "unknown")
+    # Honesty fix (#9): when the case produced zero findings, the default
+    # containment recommendations are based on assumptions, not evidence.
+    # Flag them as such so the operator (and the accuracy-report) can
+    # distinguish "evidence-driven recs" from "we-don't-know-anything-so-
+    # here's-the-default-playbook".
+    findings_n = len(state.get("_findings", []) or [])
+    based_on = "findings" if findings_n > 0 else "default_assumption_no_findings"
     recs: list[tuple[str, str, BlastRadius]] = [
         (
             "short_term",
@@ -71,6 +78,7 @@ def _build_recommendations(state: IncidentState) -> list[dict]:
                 "score": br.score(),
             },
             "advisory_only": True,
+            "based_on": based_on,
         }
         # Attach platform-specific runnable command for the default action
         # if we have one; owners need executable text, not just prose.

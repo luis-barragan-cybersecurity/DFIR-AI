@@ -251,6 +251,20 @@ def run(state: IncidentState) -> IncidentState:
             state["_rca_complete"] = True
             break
 
+    # Honesty fix (#5): when the loop exits because _analyze_iter hit MAX_ITER
+    # WITHOUT _rca_complete being set naturally, the RCA didn't actually
+    # complete — we just ran out of iteration budget. Set _rca_capped=True so
+    # session_finalize / lessons_learned / accuracy-report can surface the
+    # gap instead of pretending RCA completed.
+    if not state["_rca_complete"] and state["_analyze_iter"] >= MAX_ITER:
+        state["_rca_capped"] = True
+        record_audit(
+            state, event="analyze_iter_cap_reached",
+            data={"subagent": subagent, "max_iter": MAX_ITER,
+                  "iters_actually_run": state["_analyze_iter"],
+                  "note": "RCA halted at iteration cap; not naturally complete"},
+        )
+
     state["phase"] = "analyze"
     csf_tags.mark_satisfied(state, csf_tags.RS_AN_01)
     picerl.advance_iso27035(state, picerl.picerl_phase_for("analyze"))
@@ -260,6 +274,7 @@ def run(state: IncidentState) -> IncidentState:
         state, event="analyze_complete",
         data={"subagent": subagent, "iters": state["_analyze_iter"],
               "rca_complete": state["_rca_complete"],
+              "rca_capped": state.get("_rca_capped", False),
               "findings_count": len(state.get("_findings", []))},
     )
     write_checkpoint(state, out)

@@ -169,6 +169,26 @@ def run(state: IncidentState) -> IncidentState:
     csf_tags.mark_satisfied(state, csf_tags.RS_AN_01)
 
     state["_node_history"].append(NODE_NAME)
+
+    # Visibility fix (#8): when there are findings but scope extracted zero
+    # entities across all four buckets, the regex extraction missed
+    # everything — likely because the findings used a non-standard phrasing
+    # the patterns don't recognize. Surface that explicitly so the operator
+    # can spot it before contain.py builds blast-radius scores against an
+    # empty scope (which would silently pass the human_in_loop gate even on
+    # high-severity cases).
+    finding_n = len(state.get("_findings", []) or [])
+    total_entities = (
+        len(scope["affected_hosts"]) + len(scope["affected_users"])
+        + len(scope["affected_services"]) + len(scope["affected_data"])
+    )
+    if finding_n > 0 and total_entities == 0:
+        record_audit(
+            state, event="scope_empty_despite_findings",
+            data={"findings": finding_n,
+                  "note": "scope regex extracted zero entities — blast-radius scoring will use defaults"},
+        )
+
     record_audit(
         state, event="scope_complete",
         data={
@@ -176,6 +196,7 @@ def run(state: IncidentState) -> IncidentState:
             "users": len(scope["affected_users"]),
             "services": len(scope["affected_services"]),
             "data": len(scope["affected_data"]),
+            "findings_scanned": finding_n,
         },
     )
     emit_message(

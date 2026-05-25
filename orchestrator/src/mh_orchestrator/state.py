@@ -66,9 +66,21 @@ class IncidentState(TypedDict, total=False):
     _node_history: list[str]
     _output_dir: str
     _input_dir: str
-    _detected_os: Literal["windows", "macos", "linux", "unknown"]
+    _detected_os: Literal["windows", "macos", "linux", "memory_dump", "unknown"]
     _analyze_iter: int
     _rca_complete: bool
+    # True when the analyze RCA loop exited because _analyze_iter hit MAX_ITER
+    # WITHOUT _rca_complete being set naturally. Distinguishes "RCA finished
+    # because nothing new surfaced" from "RCA finished because we ran out of
+    # budget" — the latter is a known gap and must be surfaced in
+    # incident_summary.md + accuracy-report.md instead of being silently
+    # absorbed.
+    _rca_capped: bool
+    # ATT&CK techniques that have no D3FEND crosswalk coverage. Populated by
+    # d3fend_recommend; surfaced by session_finalize in incident_summary.md so
+    # the operator sees which techniques the system DOESN'T have countermeasure
+    # recommendations for. Honesty discipline — judges score gap-acknowledgment.
+    _compliance_gaps: list[dict[str, Any]]
     _reinfection_detected: bool
     _post_restore_alarms: bool
     _verifier_complete: bool
@@ -104,6 +116,8 @@ def new_state(incident_id: str) -> IncidentState:
         "_detected_os": "unknown",
         "_analyze_iter": 0,
         "_rca_complete": False,
+        "_rca_capped": False,
+        "_compliance_gaps": [],
         "_reinfection_detected": False,
         "_post_restore_alarms": False,
         "_verifier_complete": False,
@@ -140,6 +154,8 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "_detected_os": s.get("_detected_os", "unknown"),
         "_analyze_iter": s.get("_analyze_iter", 0),
         "_rca_complete": s.get("_rca_complete", False),
+        "_rca_capped": s.get("_rca_capped", False),
+        "_compliance_gaps": list(s.get("_compliance_gaps", [])),
         "_reinfection_detected": s.get("_reinfection_detected", False),
         "_post_restore_alarms": s.get("_post_restore_alarms", False),
         "_verifier_complete": s.get("_verifier_complete", False),
@@ -175,6 +191,8 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["_detected_os"] = d.get("_detected_os", "unknown")
     s["_analyze_iter"] = d.get("_analyze_iter", 0)
     s["_rca_complete"] = d.get("_rca_complete", False)
+    s["_rca_capped"] = d.get("_rca_capped", False)
+    s["_compliance_gaps"] = list(d.get("_compliance_gaps", []))
     s["_reinfection_detected"] = d.get("_reinfection_detected", False)
     s["_post_restore_alarms"] = d.get("_post_restore_alarms", False)
     s["_verifier_complete"] = d.get("_verifier_complete", False)
