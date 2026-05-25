@@ -107,20 +107,45 @@ def run(state: IncidentState) -> IncidentState:
                     headless=True,
                     timeout_sec=300,
                 )
-                verdict = (result.final_text or "agree").strip().lower()
+                # Trust-contract fix (#4): NEVER silently default to "agree".
+                # The previous code had two cascading defaults:
+                #   verdict = (result.final_text or "agree").strip().lower()
+                #   if verdict not in {agree,dissent,revise}: verdict = "agree"
+                # An empty subagent reply or any unparseable token was therefore
+                # interpreted as agreement — which defeats the whole point of
+                # the Verifier (independent re-verification). The Verifier is
+                # the centerpiece of the README's "Five Layers of No
+                # Hallucinations" trust contract; silent-agree breaks it.
+                #
+                # New behavior: empty / unparseable verdicts become "dissent"
+                # with a `parse_error: true` rationale. Dissent routes back to
+                # analyze for one revision pass (route_after_verifier_pass —
+                # capped by _verifier_revision_count, no infinite loop risk).
+                raw = (result.final_text or "").strip()
+                verdict = raw.lower()
+                parse_error = False
                 if verdict not in {"agree", "dissent", "revise"}:
-                    verdict = "agree"
+                    parse_error = True
+                    verdict = "dissent"
+                rationale = raw if not parse_error else (
+                    f"[parse_error] subagent reply did not match enum "
+                    f"{{agree, dissent, revise}}; raw='{raw[:200]}'; "
+                    f"treated as dissent to preserve trust contract"
+                )
                 decision = {
                     "finding_id": fid,
                     "decision": verdict,
-                    "rationale": result.final_text or "",
+                    "rationale": rationale,
                     "verifier_iter": idx,
+                    "parse_error": parse_error,
                 }
                 record_audit(
-                    state, event="verifier_pass_complete",
+                    state,
+                    event="verifier_pass_parse_error" if parse_error else "verifier_pass_complete",
                     data={"subagent": SUBAGENT, "finding_id": fid,
                           "decision": verdict, "iter": idx,
-                          "exit_code": result.exit_code},
+                          "exit_code": result.exit_code,
+                          "raw_reply": raw[:200]},
                 )
 
             state["_verifier_decisions"].append(decision)

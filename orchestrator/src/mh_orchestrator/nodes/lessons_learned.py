@@ -33,6 +33,28 @@ def _gaps(state: IncidentState) -> list[str]:
         gaps.append("No ATT&CK techniques extracted from findings")
     if not state.get("_findings"):
         gaps.append("No findings recorded by specialist subagents")
+    # Honesty fixes (#5, #4, #10): surface trust-contract gaps explicitly so
+    # judges + analysts see the limitations of this run instead of inferring
+    # them from the audit log.
+    if state.get("_rca_capped"):
+        gaps.append(
+            "RCA loop halted at iteration cap — findings may be incomplete"
+        )
+    parse_err_n = sum(
+        1 for d in state.get("_verifier_decisions", []) or []
+        if d.get("parse_error")
+    )
+    if parse_err_n:
+        gaps.append(
+            f"Verifier returned {parse_err_n} unparseable verdict(s) — "
+            "treated as dissent to preserve trust contract"
+        )
+    compliance_gap_n = len(state.get("_compliance_gaps", []) or [])
+    if compliance_gap_n:
+        gaps.append(
+            f"D3FEND crosswalk missing for {compliance_gap_n} ATT&CK "
+            "technique(s) — see compliance_map.json"
+        )
     return gaps
 
 

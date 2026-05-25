@@ -43,6 +43,19 @@ def run(state: IncidentState) -> IncidentState:
     emit_message(state, from_agent="orchestrator", to_agent=subagent,
                  role="dispatch", content="triage: classify severity and confirm OS")
 
+    # Fail-loud: when unknown OS routes through here, leave a loud audit
+    # breadcrumb so accuracy-report can flag the fallback (#6). The actual
+    # routing decision still goes through OS_TO_SUBAGENT's "unknown" entry
+    # because suppressing the route would break the smoke-graph test path
+    # and the existing fallback contract; the breadcrumb just makes it
+    # visible instead of silent.
+    if state.get("_detected_os", "unknown") == "unknown":
+        record_audit(
+            state, event="triage_unknown_os_routed_to_fallback",
+            data={"fallback_subagent": subagent,
+                  "note": "OS detection failed — fallback agent may produce wrong-OS findings"},
+        )
+
     if should_stub(NODE_NAME):
         # Deterministic stub for CI: medium severity
         state["severity"] = "medium"
@@ -56,13 +69,36 @@ def run(state: IncidentState) -> IncidentState:
             case_dir=case_dir, allowed_tools=ALLOWED_TOOLS, mcp_config_path=None,
             headless=True, timeout_sec=120,
         )
-        sev_text = (result.final_text or "medium").strip().lower()
-        state["severity"] = sev_text if sev_text in {"low", "medium", "high", "critical"} else "medium"
-        emit_message(state, from_agent=subagent, to_agent="orchestrator",
-                     role="response", content=result.final_text or "[no result]",
-                     metadata={"exit_code": result.exit_code})
-        record_audit(state, event="triage_complete",
-                     data={"subagent": subagent, "severity": state["severity"]})
+        # Trust-contract fix (#3): when the subagent reply is empty or doesn't
+        # parse to an allowed severity, do NOT silently default to "medium" —
+        # that synthesizes confidence we don't have. Record severity="unknown"
+        # so downstream nodes can branch (or skip), and emit a `tool_failure`
+        # message so the dissent trace in agent_messages.jsonl carries the
+        # parse failure verbatim.
+        raw = (result.final_text or "").strip()
+        sev_text = raw.lower()
+        if sev_text in {"low", "medium", "high", "critical"}:
+            state["severity"] = sev_text  # type: ignore[typeddict-item]
+            severity_parsed = True
+        else:
+            state["severity"] = "unknown"
+            severity_parsed = False
+        emit_message(
+            state, from_agent=subagent, to_agent="orchestrator",
+            role="response" if severity_parsed else "tool_failure",
+            content=result.final_text or "[no result]",
+            metadata={
+                "exit_code": result.exit_code,
+                "severity_parsed": severity_parsed,
+                "raw_reply": raw[:200],
+            },
+        )
+        record_audit(
+            state,
+            event="triage_complete" if severity_parsed else "triage_parse_error",
+            data={"subagent": subagent, "severity": state["severity"],
+                  "raw_reply": raw[:200], "exit_code": result.exit_code},
+        )
 
     csf_tags.mark_satisfied(state, csf_tags.RS_MA_03)
     picerl.advance_iso27035(state, picerl.picerl_phase_for("triage"))
