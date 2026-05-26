@@ -37,6 +37,8 @@ Thumbs.db
 keys/*.priv
 keys/*.pub
 secrets/
+.credentials.json
+credentials.json
 
 # Evidence (NEVER commit case data)
 /input/
@@ -52,6 +54,7 @@ corpus/**/*.lime
 corpus/**/input/*.raw
 corpus/**/input/*.dmp
 corpus/**/input/*.mem
+/analysis/
 !cases/_demo/
 
 # Local venv
