@@ -210,8 +210,12 @@ def _run_with_liveness_monitor(
     last_active = start
     timed_out = False
     reason = ""
-    while proc.poll() is None:
-        time.sleep(poll_sec)
+    while True:
+        try:
+            proc.wait(timeout=poll_sec)
+            break  # process exited on its own
+        except subprocess.TimeoutExpired:
+            pass
         now = time.monotonic()
         active = last_output[0] > last_active
         if use_cpu:
@@ -240,70 +244,71 @@ def _run_with_liveness_monitor(
     return rc, "".join(out_buf), "".join(err_buf), timed_out, reason
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _parse_stream_json(stdout: str) -> tuple[list[dict[str, Any]], str]:
+    parsed: list[dict[str, Any]] = []
+    final_text = ""
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        parsed.append(msg)
+        if msg.get("type") == "result" and msg.get("subtype") == "success":
+            final_text = msg.get("result", "") or ""
+    return parsed, final_text
+
+
 def invoke_subagent(
     *,
     subagent_name: str,
     prompt: str,
     allowed_tools: list[str] | None = None,
     headless: bool = True,
-    timeout_sec: int = 600,
 ) -> SubagentResult:
-    """Invoke a named Claude Code subagent headlessly. Returns parsed messages.
+    """Invoke a named Claude Code subagent headlessly under a liveness monitor.
 
-    Wires the subprocess exactly like the working interactive path:
-      * `--agent <subagent_name>` loads the `.claude/agents/<name>.md` persona
-        (the FOR500/FOR518 playbook) — the agent's own `tools:` frontmatter is
-        the source of truth for capability.
-      * `--mcp-config <resolved.json>` gives the agent the protocol_sift
-        forensic tools (built from the orchestrator env at call time).
-      * `CLAUDE_PROJECT_DIR` exported + cwd = project root so `.claude/agents/`
-        and the mh-mcp-server command resolve.
+    Wires --agent / --mcp-config / CLAUDE_PROJECT_DIR / project-root cwd exactly
+    as the working interactive path, then runs under _run_with_liveness_monitor:
+    a call is killed only when genuinely idle (no CPU and no output) for
+    MH_SUBAGENT_IDLE_TIMEOUT_SEC, or after the MH_SUBAGENT_MAX_SEC ceiling. A
+    timeout returns timed_out=True (never raises) so the caller can degrade.
     """
     project_dir = _resolve_project_dir()
     tools = allowed_tools if allowed_tools is not None else DEFAULT_ALLOWED_TOOLS
+    idle_timeout = _env_float("MH_SUBAGENT_IDLE_TIMEOUT_SEC", 600.0)
+    max_sec = _env_float("MH_SUBAGENT_MAX_SEC", 7200.0)
+    poll_sec = _env_float("MH_SUBAGENT_POLL_SEC", 15.0)
 
     with tempfile.TemporaryDirectory(prefix="mh-mcp-") as td:
         mcp_cfg = _write_mcp_config(project_dir, Path(td))
-
         argv: list[str] = ["claude"]
         if headless:
             argv += ["-p", "--output-format", "stream-json", "--verbose"]
-        # Persona: load the named agent so its system prompt + tool scope apply.
-        argv += ["--agent", subagent_name]
-        argv += ["--mcp-config", str(mcp_cfg)]
+        argv += ["--agent", subagent_name, "--mcp-config", str(mcp_cfg)]
         if tools:
             argv += ["--allowedTools", ",".join(tools)]
-
         env = {**os.environ, "CLAUDE_PROJECT_DIR": str(project_dir)}
-        proc = subprocess.run(
-            argv,
-            input=prompt,
-            text=True,
-            capture_output=True,
-            timeout=timeout_sec,
-            cwd=str(project_dir),
-            env=env,
-            check=False,
+        rc, stdout, stderr, timed_out, reason = _run_with_liveness_monitor(
+            argv, prompt=prompt, cwd=str(project_dir), env=env,
+            idle_timeout=idle_timeout, max_sec=max_sec, poll_sec=poll_sec,
         )
 
-    parsed: list[dict[str, Any]] = []
-    final_text = ""
-    if headless:
-        for line in proc.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            parsed.append(msg)
-            if msg.get("type") == "result" and msg.get("subtype") == "success":
-                final_text = msg.get("result", "") or ""
+    parsed, final_text = _parse_stream_json(stdout) if headless else ([], "")
     return SubagentResult(
-        exit_code=proc.returncode,
-        stdout=proc.stdout,
-        stderr=proc.stderr,
-        parsed_messages=parsed,
-        final_text=final_text,
+        exit_code=rc, stdout=stdout, stderr=stderr,
+        parsed_messages=parsed, final_text=final_text,
+        timed_out=timed_out, timeout_reason=reason,
     )

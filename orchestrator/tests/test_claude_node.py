@@ -273,3 +273,17 @@ def test_monitor_idle_fallback_when_proc_unavailable(tmp_path, monkeypatch):
     )
     assert timed_out is True
     assert reason == "idle"
+
+
+def test_invoke_subagent_returns_timed_out_on_idle(tmp_path, monkeypatch):
+    """A silent, idle subagent makes invoke_subagent return timed_out=True
+    (NOT raise), honoring the env-tuned idle timeout."""
+    _write_fake_claude(tmp_path, "cat >/dev/null\nsleep 30\n")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("MH_HOME", str(tmp_path))
+    monkeypatch.setenv("MH_SUBAGENT_IDLE_TIMEOUT_SEC", "1")
+    monkeypatch.setenv("MH_SUBAGENT_POLL_SEC", "0.25")
+    from mh_orchestrator.claude_node import invoke_subagent
+    result = invoke_subagent(subagent_name="WindowsAgent", prompt="go", headless=True)
+    assert result.timed_out is True
+    assert result.timeout_reason == "idle"
