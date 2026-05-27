@@ -17,11 +17,16 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from . import proc_activity
 
 
 def should_stub(node_name: str) -> bool:
@@ -115,6 +120,114 @@ def _write_mcp_config(project_dir: Path, dest_dir: Path) -> Path:
     path = dest_dir / "mcp-config.json"
     path.write_text(json.dumps(cfg))
     return path
+
+
+def _read_stream(stream: Any, buf: list[str], last_ts: list[float]) -> None:
+    """Drain a text stream line-by-line into buf, stamping last_ts on each line.
+    Runs in a daemon thread so a long subagent can't deadlock on a full pipe."""
+    try:
+        for line in stream:
+            buf.append(line)
+            last_ts[0] = time.monotonic()
+    except (ValueError, OSError):
+        pass  # stream closed under us on kill
+
+
+def _kill_group(proc: "subprocess.Popen[str]") -> None:
+    """SIGTERM the whole process group, grace, then SIGKILL. Kills the agent
+    plus its mh-mcp-server and any tool subprocesses (start_new_session put
+    them in one group)."""
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (OSError, ProcessLookupError):
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        return
+    try:
+        proc.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        pass
+
+
+def _run_with_liveness_monitor(
+    argv: list[str], *, prompt: str, cwd: str, env: dict[str, str],
+    idle_timeout: float, max_sec: float, poll_sec: float,
+) -> tuple[int, str, str, bool, str]:
+    """Run argv under a liveness monitor. Returns
+    (returncode, stdout, stderr, timed_out, timeout_reason).
+
+    Idle = no stdout/stderr line AND no process-group CPU advance for
+    idle_timeout seconds. A kill (idle or ceiling) terminates the whole group
+    and returns timed_out=True rather than raising.
+    """
+    proc = subprocess.Popen(  # noqa: S603
+        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, cwd=cwd, env=env,
+        start_new_session=True,
+    )
+    try:
+        if proc.stdin is not None:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+    except (BrokenPipeError, OSError):
+        pass
+
+    out_buf: list[str] = []
+    err_buf: list[str] = []
+    last_output = [time.monotonic()]
+    threads = [
+        threading.Thread(target=_read_stream, args=(proc.stdout, out_buf, last_output), daemon=True),
+        threading.Thread(target=_read_stream, args=(proc.stderr, err_buf, last_output), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+
+    use_cpu = proc_activity.proc_available()
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        pgid = proc.pid
+    prev_cpu = proc_activity.read_pgroup_cpu(pgid) if use_cpu else {}
+
+    start = time.monotonic()
+    last_active = start
+    timed_out = False
+    reason = ""
+    while proc.poll() is None:
+        time.sleep(poll_sec)
+        now = time.monotonic()
+        active = last_output[0] > last_active
+        if use_cpu:
+            curr_cpu = proc_activity.read_pgroup_cpu(pgid)
+            if proc_activity.cpu_advanced(prev_cpu, curr_cpu):
+                active = True
+            prev_cpu = curr_cpu
+        if active:
+            last_active = now
+        elif now - last_active >= idle_timeout:
+            timed_out, reason = True, "idle"
+            break
+        if now - start >= max_sec:
+            timed_out, reason = True, "ceiling"
+            break
+
+    if timed_out:
+        _kill_group(proc)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+    for t in threads:
+        t.join(timeout=2)
+    rc = proc.returncode if proc.returncode is not None else -1
+    return rc, "".join(out_buf), "".join(err_buf), timed_out, reason
 
 
 def invoke_subagent(

@@ -176,3 +176,102 @@ def test_subagent_result_defaults_not_timed_out():
     r = SubagentResult(exit_code=0, stdout="", stderr="")
     assert r.timed_out is False
     assert r.timeout_reason == ""
+
+
+import textwrap
+
+
+def _write_fake_claude(tmp_path, body: str):
+    """Write an executable fake `claude` whose bash body is `body`."""
+    import stat as _stat
+    fake = tmp_path / "bin" / "claude"
+    fake.parent.mkdir(parents=True, exist_ok=True)
+    fake.write_text("#!/usr/bin/env bash\n" + textwrap.dedent(body))
+    fake.chmod(fake.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP)
+    return fake
+
+
+def test_monitor_kills_idle_silent_process(tmp_path):
+    from mh_orchestrator.claude_node import _run_with_liveness_monitor
+    fake = _write_fake_claude(tmp_path, "cat >/dev/null\nsleep 30\n")
+    rc, out, err, timed_out, reason = _run_with_liveness_monitor(
+        [str(fake)], prompt="go", cwd=str(tmp_path), env=dict(__import__("os").environ),
+        idle_timeout=1.0, max_sec=30.0, poll_sec=0.25,
+    )
+    assert timed_out is True
+    assert reason == "idle"
+
+
+def test_monitor_keeps_cpu_busy_process_alive(tmp_path):
+    # Silent (no stdout) but CPU-busy for ~2s, longer than idle_timeout, then exits.
+    from mh_orchestrator.claude_node import _run_with_liveness_monitor
+    fake = _write_fake_claude(
+        tmp_path,
+        "cat >/dev/null\n"
+        "python3 -c 'import time; t=time.time()\\nwhile time.time()-t<2: pass'\n"
+        "echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'\n",
+    )
+    rc, out, err, timed_out, reason = _run_with_liveness_monitor(
+        [str(fake)], prompt="go", cwd=str(tmp_path), env=dict(__import__("os").environ),
+        idle_timeout=1.0, max_sec=30.0, poll_sec=0.25,
+    )
+    assert timed_out is False
+    assert "ok" in out
+
+
+def test_monitor_keeps_stdout_active_process_alive(tmp_path):
+    # Near-zero CPU (sleeps) but prints a line every 0.3s for ~1.8s, > idle_timeout.
+    from mh_orchestrator.claude_node import _run_with_liveness_monitor
+    fake = _write_fake_claude(
+        tmp_path,
+        "cat >/dev/null\n"
+        "for i in $(seq 1 6); do echo \"line $i\"; sleep 0.3; done\n"
+        "echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\"}'\n",
+    )
+    rc, out, err, timed_out, reason = _run_with_liveness_monitor(
+        [str(fake)], prompt="go", cwd=str(tmp_path), env=dict(__import__("os").environ),
+        idle_timeout=1.0, max_sec=30.0, poll_sec=0.25,
+    )
+    assert timed_out is False
+
+
+def test_monitor_enforces_absolute_ceiling(tmp_path):
+    # Always active (prints forever) but exceeds the ceiling.
+    from mh_orchestrator.claude_node import _run_with_liveness_monitor
+    fake = _write_fake_claude(
+        tmp_path, "cat >/dev/null\nwhile true; do echo x; sleep 0.2; done\n",
+    )
+    rc, out, err, timed_out, reason = _run_with_liveness_monitor(
+        [str(fake)], prompt="go", cwd=str(tmp_path), env=dict(__import__("os").environ),
+        idle_timeout=30.0, max_sec=1.0, poll_sec=0.25,
+    )
+    assert timed_out is True
+    assert reason == "ceiling"
+
+
+def test_monitor_fast_clean_exit_not_timed_out(tmp_path):
+    from mh_orchestrator.claude_node import _run_with_liveness_monitor
+    fake = _write_fake_claude(
+        tmp_path, "cat >/dev/null\necho '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'\n",
+    )
+    rc, out, err, timed_out, reason = _run_with_liveness_monitor(
+        [str(fake)], prompt="go", cwd=str(tmp_path), env=dict(__import__("os").environ),
+        idle_timeout=5.0, max_sec=30.0, poll_sec=0.25,
+    )
+    assert timed_out is False
+    assert rc == 0
+    assert "ok" in out
+
+
+def test_monitor_idle_fallback_when_proc_unavailable(tmp_path, monkeypatch):
+    # Force the /proc-absent path; idle detection must still work via stdout silence.
+    from mh_orchestrator import proc_activity
+    monkeypatch.setattr(proc_activity, "proc_available", lambda: False)
+    from mh_orchestrator.claude_node import _run_with_liveness_monitor
+    fake = _write_fake_claude(tmp_path, "cat >/dev/null\nsleep 30\n")
+    rc, out, err, timed_out, reason = _run_with_liveness_monitor(
+        [str(fake)], prompt="go", cwd=str(tmp_path), env=dict(__import__("os").environ),
+        idle_timeout=1.0, max_sec=30.0, poll_sec=0.25,
+    )
+    assert timed_out is True
+    assert reason == "idle"
