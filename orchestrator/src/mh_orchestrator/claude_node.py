@@ -70,6 +70,8 @@ class SubagentResult:
     stderr: str
     parsed_messages: list[dict[str, Any]] = field(default_factory=list)
     final_text: str = ""
+    timed_out: bool = False
+    timeout_reason: str = ""
 
 
 def _resolve_project_dir() -> Path:

@@ -169,3 +169,10 @@ def test_invoke_subagent_surfaces_nonzero_exit(tmp_path, monkeypatch):
         headless=True,
     )
     assert result.exit_code == 7
+
+
+def test_subagent_result_defaults_not_timed_out():
+    from mh_orchestrator.claude_node import SubagentResult
+    r = SubagentResult(exit_code=0, stdout="", stderr="")
+    assert r.timed_out is False
+    assert r.timeout_reason == ""
