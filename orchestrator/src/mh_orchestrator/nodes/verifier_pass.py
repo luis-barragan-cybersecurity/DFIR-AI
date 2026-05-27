@@ -96,6 +96,34 @@ def run(state: IncidentState) -> IncidentState:
                     prompt=prompt,
                     headless=True,
                 )
+                if result.timed_out:
+                    decision = {
+                        "finding_id": fid,
+                        "decision": "dissent",
+                        "rationale": (
+                            f"[timeout] re-verification of {fid} hit a "
+                            f"{result.timeout_reason} timeout before completing; "
+                            f"treated as dissent to preserve the trust contract."
+                        ),
+                        "verifier_iter": idx,
+                        "parse_error": False,
+                        "timed_out": True,
+                    }
+                    record_audit(
+                        state, event="verifier_pass_timeout",
+                        data={"subagent": SUBAGENT, "finding_id": fid,
+                              "reason": result.timeout_reason, "iter": idx},
+                    )
+                    state["_verifier_decisions"].append(decision)
+                    emit_message(
+                        state, from_agent=SUBAGENT, to_agent="orchestrator",
+                        role="tool_failure",
+                        content=f"verifier decision: dissent for {fid} (timeout)",
+                        metadata={"verifier_decision": "dissent", "finding_id": fid,
+                                  "verifier_iter": idx, "timed_out": True,
+                                  "rationale": decision["rationale"]},
+                    )
+                    continue
                 # Trust-contract fix (#4): NEVER silently default to "agree".
                 # The previous code had two cascading defaults:
                 #   verdict = (result.final_text or "agree").strip().lower()
