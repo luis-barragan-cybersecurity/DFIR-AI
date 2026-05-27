@@ -5,8 +5,6 @@ import os
 import subprocess
 import time
 
-import pytest
-
 from mh_orchestrator import proc_activity
 
 
@@ -33,6 +31,8 @@ def test_busy_process_registers_cpu_activity():
 
 
 def test_idle_process_registers_no_cpu_activity():
+    # Mildly timing-sensitive: under heavy host load an idle sleep could
+    # accrue a stray jiffy, but in practice it stays flat across 0.5s.
     proc = subprocess.Popen(["sleep", "5"], start_new_session=True)
     try:
         pgid = os.getpgid(proc.pid)
@@ -48,3 +48,11 @@ def test_idle_process_registers_no_cpu_activity():
 def test_read_pgroup_cpu_never_raises_on_bad_pgid():
     # A pgid with no live members returns an empty mapping, no exception.
     assert proc_activity.read_pgroup_cpu(999999) == {}
+
+
+def test_cpu_advanced_pure_logic():
+    assert proc_activity.cpu_advanced({}, {}) is False
+    assert proc_activity.cpu_advanced({}, {1: 100}) is True          # new pid counts first reading
+    assert proc_activity.cpu_advanced({1: 100}, {1: 101}) is True    # burned CPU
+    assert proc_activity.cpu_advanced({1: 100}, {1: 100}) is False   # idle (no delta)
+    assert proc_activity.cpu_advanced({1: 100}, {}) is False         # exited pid ignored

@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 def proc_available() -> bool:
-    """True when /proc is a readable directory (Linux)."""
+    """True when /proc is present as a directory (Linux). A mounted-but-unreadable /proc still degrades safely: read_pgroup_cpu returns {} on listdir failure."""
     return Path("/proc").is_dir()
 
 
