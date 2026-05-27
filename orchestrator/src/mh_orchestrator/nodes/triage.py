@@ -74,6 +74,25 @@ def run(state: IncidentState) -> IncidentState:
             ),
             headless=True,
         )
+        if result.timed_out:
+            state["severity"] = "unknown"
+            state["_triage_false_positive"] = False  # fail-open: investigate
+            emit_message(
+                state, from_agent=subagent, to_agent="orchestrator",
+                role="tool_failure",
+                content=f"[timeout:{result.timeout_reason}] triage terminated",
+                metadata={"timed_out": True, "reason": result.timeout_reason},
+            )
+            record_audit(
+                state, event="triage_timeout",
+                data={"subagent": subagent, "reason": result.timeout_reason},
+            )
+            csf_tags.mark_satisfied(state, csf_tags.RS_MA_03)
+            picerl.advance_iso27035(state, picerl.picerl_phase_for("triage"))
+            state["_node_history"].append("triage")
+            write_checkpoint(state, out)
+            append_history(state, out, node="triage")
+            return state
         # Trust-contract fix (#3): when the subagent reply is empty or doesn't
         # parse to an allowed token, do NOT silently default to "medium" —
         # that synthesizes confidence we don't have. Record severity="unknown"

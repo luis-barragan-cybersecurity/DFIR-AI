@@ -83,6 +83,28 @@ def test_triage_writes_dispatch_response_messages(tmp_path: Path) -> None:
     assert has_dispatch and has_response
 
 
+def test_triage_timeout_fails_open_to_unknown(tmp_path, monkeypatch) -> None:
+    """A timed-out triage call must fail OPEN (severity unknown, NOT a false
+    positive) so the investigation still proceeds, and must not raise."""
+    from mh_orchestrator.claude_node import SubagentResult
+    from mh_orchestrator.nodes import triage as triage_mod
+    monkeypatch.setenv("MH_NO_CLAUDE", "0")
+
+    def fake_invoke(**kwargs):
+        return SubagentResult(exit_code=-15, stdout="", stderr="",
+                              timed_out=True, timeout_reason="idle")
+
+    monkeypatch.setattr(triage_mod, "invoke_subagent", fake_invoke)
+
+    s = new_state("c")
+    s["_output_dir"] = str(tmp_path)
+    s["_detected_os"] = "windows"
+    s = triage_mod.run(s)
+
+    assert s["severity"] == "unknown"
+    assert s["_triage_false_positive"] is False
+
+
 def test_memory_dump_routes_to_windows_agent(tmp_path: Path) -> None:
     """Regression: rocba-memory case shipped a Windows memory image (Rocba-Memory.raw).
     Previously memory_dump fell through to WindowsAgent via the fallback default —
