@@ -95,7 +95,6 @@ def run(state: IncidentState) -> IncidentState:
                     subagent_name=SUBAGENT,
                     prompt=prompt,
                     headless=True,
-                    timeout_sec=300,
                 )
                 # Trust-contract fix (#4): NEVER silently default to "agree".
                 # The previous code had two cascading defaults:

@@ -72,7 +72,7 @@ def run(state: IncidentState) -> IncidentState:
                 "pick a severity — do NOT reply false_positive unless you are sure, "
                 "because that suppresses the entire investigation."
             ),
-            headless=True, timeout_sec=120,
+            headless=True,
         )
         # Trust-contract fix (#3): when the subagent reply is empty or doesn't
         # parse to an allowed token, do NOT silently default to "medium" —

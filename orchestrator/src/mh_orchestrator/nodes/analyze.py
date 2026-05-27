@@ -188,7 +188,6 @@ def run(state: IncidentState) -> IncidentState:
             subagent_name=subagent,
             prompt=prompt,
             headless=True,
-            timeout_sec=1200,
         )
         if result.exit_code != 0:
             record_audit(
