@@ -116,6 +116,27 @@ def test_memory_dump_with_darwin_kernel_banner_classifies_as_macos(
     assert s["_detected_os"] == "macos"
 
 
+@pytest.mark.parametrize("ntfs_file", ["$MFT", "$LogFile", "$UsnJrnl", "$Boot"])
+def test_ntfs_metadata_files_classify_as_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ntfs_file: str
+) -> None:
+    """A raw NTFS metadata-file triage (e.g. the $MFT-only BFT collection) must
+    classify as windows. Previously the heuristic had no NTFS markers, so a
+    $MFT-only case returned 'unknown' → wrong-agent fallback and (pre-fix)
+    premature suppression killed the whole investigation."""
+    evidence = tmp_path / "input"
+    evidence.mkdir()
+    (evidence / ntfs_file).write_bytes(b"\x00" * 256)
+    monkeypatch.setenv("EVIDENCE_PATH", str(evidence))
+
+    s = new_state("c")
+    s["_output_dir"] = str(tmp_path)
+    s = detect.run(s)
+    assert s["_detected_os"] == "windows", (
+        f"{ntfs_file} should classify as windows, got {s['_detected_os']!r}"
+    )
+
+
 def test_windows_os_artifacts_outrank_memory_dump_extension(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

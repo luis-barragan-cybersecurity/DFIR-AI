@@ -1,10 +1,126 @@
 """claude_node tests — uses a fake `claude` binary on PATH."""
 from __future__ import annotations
 
+import json
 import os
 import stat
 
 import pytest
+
+
+@pytest.fixture
+def capturing_claude(tmp_path, monkeypatch):
+    """Fake `claude` that records argv, cwd, CLAUDE_PROJECT_DIR, the stdin
+    prompt, and the content of any --mcp-config file — so tests can assert how
+    invoke_subagent wired the subprocess without launching real Claude."""
+    capture = tmp_path / "capture.txt"
+    mcp_dump = tmp_path / "capture.mcp.json"
+    stdin_dump = tmp_path / "capture.stdin.txt"
+    fake = tmp_path / "bin" / "claude"
+    fake.parent.mkdir(parents=True, exist_ok=True)
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        f'cat > "{stdin_dump}"\n'
+        f'{{ echo "CWD=$(pwd)"; echo "CLAUDE_PROJECT_DIR=${{CLAUDE_PROJECT_DIR:-}}"; '
+        f'echo "ARGV=$*"; }} > "{capture}"\n'
+        'prev=""\n'
+        'for a in "$@"; do\n'
+        f'  if [ "$prev" = "--mcp-config" ]; then cp "$a" "{mcp_dump}"; fi\n'
+        '  prev="$a"\n'
+        'done\n'
+        "echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'\n"
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+    monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
+    return capture, mcp_dump, stdin_dump
+
+
+def test_invoke_subagent_wires_mcp_and_project_context(capturing_claude, tmp_path, monkeypatch):
+    """The headless subprocess must receive a protocol_sift --mcp-config built
+    from the orchestrator env, with CLAUDE_PROJECT_DIR exported and cwd set to
+    the project root — otherwise the spawned agent has no forensic tools (the
+    root-cause bug: nodes passed mcp_config_path=None)."""
+    capture, mcp_dump, _ = capturing_claude
+    project = tmp_path / "proj"
+    (project / "bin").mkdir(parents=True)
+    monkeypatch.setenv("MH_HOME", str(project))
+    monkeypatch.setenv("EVIDENCE_PATH", str(tmp_path / "ev"))
+    monkeypatch.setenv("OUTPUT_PATH", str(tmp_path / "out"))
+    monkeypatch.setenv("CASE_ID", "case-xyz")
+
+    from mh_orchestrator.claude_node import invoke_subagent
+    invoke_subagent(
+        subagent_name="WindowsAgent", prompt="go",
+        allowed_tools=["mcp__protocol_sift__hash", "Read"], headless=True,
+    )
+
+    text = capture.read_text()
+    assert "--mcp-config" in text, "no --mcp-config passed → agent has no MCP tools"
+    assert f"CLAUDE_PROJECT_DIR={project}" in text
+    assert f"CWD={project}" in text, "cwd must be project root so .claude/ + mh-mcp-server resolve"
+
+    cfg = json.loads(mcp_dump.read_text())
+    server = cfg["mcpServers"]["protocol_sift"]
+    assert server["command"].endswith("bin/mh-mcp-server")
+    assert server["env"]["EVIDENCE_PATH"] == str(tmp_path / "ev")
+    assert server["env"]["OUTPUT_PATH"] == str(tmp_path / "out")
+    assert server["env"]["CASE_ID"] == "case-xyz"
+    assert server["env"]["MH_HOME"] == str(project)
+
+
+def test_invoke_subagent_fails_loud_without_mh_home(tmp_path, monkeypatch):
+    """No silent fallback (trust contract): if MH_HOME is unset the wiring
+    cannot be built, so invoke_subagent must raise rather than spawn a blind
+    agent with no MCP config."""
+    monkeypatch.delenv("MH_HOME", raising=False)
+    from mh_orchestrator.claude_node import invoke_subagent
+    with pytest.raises(RuntimeError, match="MH_HOME"):
+        invoke_subagent(
+            subagent_name="WindowsAgent", prompt="go",
+            allowed_tools=["Read"], headless=True,
+        )
+
+
+def test_invoke_subagent_defaults_to_whole_server_allowlist(capturing_claude, tmp_path, monkeypatch):
+    """Decision: agent frontmatter is the source of truth for capability, so
+    we stop maintaining narrow per-node allowlists. Operationally this is also
+    REQUIRED: in headless -p mode a tool call outside --allowedTools hangs
+    indefinitely, so the default must grant the whole protocol_sift server."""
+    capture, _, _ = capturing_claude
+    project = tmp_path / "proj"
+    (project / "bin").mkdir(parents=True)
+    monkeypatch.setenv("MH_HOME", str(project))
+
+    from mh_orchestrator.claude_node import invoke_subagent
+    invoke_subagent(subagent_name="WindowsAgent", prompt="go", headless=True)  # no allowed_tools
+
+    argv = capture.read_text()
+    assert "--allowedTools" in argv
+    assert "mcp__protocol_sift" in argv, "default allowlist must grant the whole protocol_sift server"
+
+
+def test_invoke_subagent_loads_named_agent_persona(capturing_claude, tmp_path, monkeypatch):
+    """The OS-specialist playbook must actually load: pass --agent <name> so
+    the .claude/agents/<name>.md persona runs, and drop the dead
+    'Use the X subagent.' text prefix (a default-agent session with no Task
+    tool ignored it, so the FOR500/FOR518 playbook was never applied)."""
+    capture, _, stdin_dump = capturing_claude
+    project = tmp_path / "proj"
+    (project / "bin").mkdir(parents=True)
+    monkeypatch.setenv("MH_HOME", str(project))
+
+    from mh_orchestrator.claude_node import invoke_subagent
+    invoke_subagent(
+        subagent_name="LinuxAgent", prompt="analyze the evidence",
+        allowed_tools=["Read"], headless=True,
+    )
+
+    argv = capture.read_text()
+    assert "--agent LinuxAgent" in argv, "persona not loaded via --agent"
+
+    prompt_sent = stdin_dump.read_text()
+    assert "analyze the evidence" in prompt_sent
+    assert "Use the LinuxAgent subagent" not in prompt_sent, "dead text-prefix must be gone"
 
 
 @pytest.fixture
@@ -24,14 +140,13 @@ def fake_claude(tmp_path, monkeypatch):
     return fake
 
 
-def test_invoke_subagent_parses_stream_json(fake_claude, tmp_path):
+def test_invoke_subagent_parses_stream_json(fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("MH_HOME", str(tmp_path))
     from mh_orchestrator.claude_node import invoke_subagent
     result = invoke_subagent(
         subagent_name="WindowsAgent",
         prompt="probe",
-        case_dir=tmp_path,
         allowed_tools=["mcp__protocol_sift__hash"],
-        mcp_config_path=None,
         headless=True,
     )
     assert result.exit_code == 0
@@ -45,13 +160,12 @@ def test_invoke_subagent_surfaces_nonzero_exit(tmp_path, monkeypatch):
     fake.write_text("#!/usr/bin/env bash\nexit 7\n")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("MH_HOME", str(tmp_path))
     from mh_orchestrator.claude_node import invoke_subagent
     result = invoke_subagent(
         subagent_name="WindowsAgent",
         prompt="probe",
-        case_dir=tmp_path,
         allowed_tools=[],
-        mcp_config_path=None,
         headless=True,
     )
     assert result.exit_code == 7

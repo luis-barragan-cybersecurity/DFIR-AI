@@ -27,12 +27,6 @@ from ..state import IncidentState
 NODE_NAME = "verifier_pass"
 SUBAGENT = "Verifier"
 
-ALLOWED_TOOLS = [
-    "mcp__protocol_sift__hash",
-    "mcp__protocol_sift__finding_record",
-    "Read", "Glob", "Grep",
-]
-
 STUB_RATIONALE = "MH_NO_CLAUDE stub: skipped re-verification"
 
 
@@ -50,7 +44,6 @@ def run(state: IncidentState) -> IncidentState:
     from . import emit_message, record_audit  # lazy to avoid circular
 
     out = Path(state["_output_dir"])
-    case_dir = out.parent
     findings = state.get("_findings", []) or []
 
     # Defensive init for states deserialized from older snapshots.
@@ -101,9 +94,6 @@ def run(state: IncidentState) -> IncidentState:
                 result = invoke_subagent(
                     subagent_name=SUBAGENT,
                     prompt=prompt,
-                    case_dir=case_dir,
-                    allowed_tools=ALLOWED_TOOLS,
-                    mcp_config_path=None,
                     headless=True,
                     timeout_sec=300,
                 )

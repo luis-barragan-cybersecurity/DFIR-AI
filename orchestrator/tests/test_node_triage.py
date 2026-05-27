@@ -2,10 +2,30 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
+
+import pytest
 
 from mh_orchestrator.nodes import triage
 from mh_orchestrator.state import new_state
+
+
+def _install_fake_claude(tmp_path, monkeypatch, reply: str) -> None:
+    """Put a fake `claude` on PATH that returns `reply` as its success result,
+    and run triage in real (non-stub) mode wired to a project root."""
+    fake = tmp_path / "bin" / "claude"
+    fake.parent.mkdir(parents=True, exist_ok=True)
+    fake.write_text(
+        "#!/usr/bin/env bash\ncat >/dev/null\n"
+        f"echo '{{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"{reply}\"}}'\n"
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+    monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("MH_NO_CLAUDE", "0")  # override conftest autouse stub
+    (tmp_path / "bin").mkdir(exist_ok=True)
+    monkeypatch.setenv("MH_HOME", str(tmp_path))
 
 
 def test_triage_sets_severity_under_no_claude(tmp_path: Path) -> None:
@@ -16,6 +36,38 @@ def test_triage_sets_severity_under_no_claude(tmp_path: Path) -> None:
     assert s["severity"] in {"low", "medium", "high", "critical"}
     assert "RS.MA-03" in s["csf_subcategories_satisfied"]
     assert "triage" in s["_node_history"]
+
+
+def test_triage_stub_does_not_flag_false_positive(tmp_path: Path) -> None:
+    """Stub (happy path) must NOT mark a false positive — it flows to the full
+    pipeline, never suppress."""
+    s = new_state("c")
+    s["_output_dir"] = str(tmp_path)
+    s["_detected_os"] = "windows"
+    s = triage.run(s)
+    assert s["_triage_false_positive"] is False
+
+
+def test_triage_explicit_false_positive_sets_flag(tmp_path, monkeypatch) -> None:
+    """A specialist that explicitly returns a false-positive verdict sets the
+    flag so route_after_triage can suppress."""
+    _install_fake_claude(tmp_path, monkeypatch, "false_positive")
+    s = new_state("c")
+    s["_output_dir"] = str(tmp_path)
+    s["_detected_os"] = "windows"
+    s = triage.run(s)
+    assert s["_triage_false_positive"] is True
+
+
+def test_triage_severity_reply_is_not_false_positive(tmp_path, monkeypatch) -> None:
+    """A normal severity verdict (even 'low') must NOT flag a false positive."""
+    _install_fake_claude(tmp_path, monkeypatch, "low")
+    s = new_state("c")
+    s["_output_dir"] = str(tmp_path)
+    s["_detected_os"] = "windows"
+    s = triage.run(s)
+    assert s["severity"] == "low"
+    assert s["_triage_false_positive"] is False
 
 
 def test_triage_writes_dispatch_response_messages(tmp_path: Path) -> None:

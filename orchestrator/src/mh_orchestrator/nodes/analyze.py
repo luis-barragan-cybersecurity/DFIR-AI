@@ -36,22 +36,6 @@ OS_TO_SUBAGENT: dict[str, str] = {
 }
 FALLBACK_SUBAGENT = "WindowsAgent"
 
-ALLOWED_TOOLS = [
-    "mcp__protocol_sift__hash",
-    "mcp__protocol_sift__finding_record",
-    "mcp__protocol_sift__os_detect",
-    "mcp__protocol_sift__magic_check",
-    "mcp__protocol_sift__memory_volatility",
-    "mcp__protocol_sift__linux_history_parse",
-    "mcp__protocol_sift__win_registry_get",
-    "mcp__protocol_sift__win_evtx_query",
-    "mcp__protocol_sift__win_prefetch_parse",
-    "mcp__protocol_sift__win_lnk_parse",
-    "mcp__protocol_sift__mac_plist_get",
-    "mcp__protocol_sift__audit_append",
-    "Read", "Glob", "Grep",
-]
-
 
 def _select_subagent(state: IncidentState) -> tuple[str, bool]:
     """Return (subagent_name, is_fallback)."""
@@ -203,9 +187,6 @@ def run(state: IncidentState) -> IncidentState:
         result = invoke_subagent(
             subagent_name=subagent,
             prompt=prompt,
-            case_dir=case_dir,
-            allowed_tools=ALLOWED_TOOLS,
-            mcp_config_path=None,
             headless=True,
             timeout_sec=1200,
         )
