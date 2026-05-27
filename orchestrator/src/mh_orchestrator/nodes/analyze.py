@@ -11,6 +11,7 @@ Marks RS.AN-01 (Analysis: notifications + cause). Sets phase='analyze'.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -189,6 +190,63 @@ def run(state: IncidentState) -> IncidentState:
             prompt=prompt,
             headless=True,
         )
+        if result.timed_out:
+            # Graceful degradation: keep whatever the agent already recorded,
+            # disclose the truncation as a confidence='unknown' gap finding,
+            # and stop the RCA loop (a retry of a slow/hung call would just
+            # time out again). The pipeline continues to session_finalize.
+            findings_path = Path(state["_output_dir"]) / "findings.json"
+            partial: list[dict] = []
+            if findings_path.exists():
+                try:
+                    raw = json.loads(findings_path.read_text())
+                    if isinstance(raw, list):
+                        partial = raw
+                    elif isinstance(raw, dict) and isinstance(raw.get("findings"), list):
+                        partial = raw["findings"]
+                except (json.JSONDecodeError, OSError):
+                    partial = []
+            _merge_findings(state, partial)
+
+            gap = {
+                "finding_id": f"analyze-timeout-gap-{iter_num}",
+                "claim": (
+                    f"Analysis truncated: the analyze node hit a "
+                    f"{result.timeout_reason} timeout while dispatching {subagent} "
+                    f"(iteration {iter_num}). Findings recorded before this point "
+                    f"may be incomplete."
+                ),
+                "confidence": "unknown",
+                "confidence_rationale": (
+                    f"unknown because the specialist was terminated on a "
+                    f"{result.timeout_reason} timeout before signalling completion, "
+                    f"so analysis coverage cannot be asserted."
+                ),
+                "pins": [{
+                    "artifact": "output/audit.jsonl",
+                    "tool": "orchestrator",
+                    "locator": {"type": "log_line", "value": "analyze_timeout"},
+                    "raw_excerpt": f"analyze_timeout reason={result.timeout_reason} iter={iter_num}",
+                    "captured_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }],
+                "mitre_attck": [],
+                "related_findings": [],
+            }
+            _merge_findings(state, [gap])
+            state["_analyze_timed_out"] = True
+            emit_message(
+                state, from_agent=subagent, to_agent="orchestrator",
+                role="tool_failure",
+                content=f"[timeout:{result.timeout_reason}] analyze iteration {iter_num} terminated",
+                metadata={"timed_out": True, "reason": result.timeout_reason, "iter": iter_num},
+            )
+            record_audit(
+                state, event="analyze_timeout",
+                data={"subagent": subagent, "iter": iter_num,
+                      "reason": result.timeout_reason,
+                      "findings_count": len(state.get("_findings", []))},
+            )
+            break
         if result.exit_code != 0:
             record_audit(
                 state, event="analyze_subagent_failed",

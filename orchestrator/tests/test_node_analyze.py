@@ -111,3 +111,38 @@ def test_os_to_subagent_includes_memory_dump():
         "memory_dump must route explicitly to WindowsAgent so the analyze prompt "
         "can include the mandatory Volatility plugin sequence"
     )
+
+
+def test_analyze_timeout_appends_gap_finding_and_continues(tmp_path, monkeypatch):
+    """When invoke_subagent reports a timeout, analyze keeps partial findings,
+    appends a confidence='unknown' gap finding, sets _analyze_timed_out, breaks
+    the RCA loop, and does NOT raise."""
+    from mh_orchestrator.claude_node import SubagentResult
+    from mh_orchestrator.nodes import analyze
+    from mh_orchestrator.state import new_state
+
+    # Run analyze in real (non-stub) mode but stub the subprocess layer.
+    monkeypatch.setenv("MH_NO_CLAUDE", "0")
+
+    def fake_invoke(**kwargs):
+        return SubagentResult(
+            exit_code=-15, stdout="", stderr="",
+            timed_out=True, timeout_reason="idle",
+        )
+
+    monkeypatch.setattr(analyze, "invoke_subagent", fake_invoke)
+
+    s = new_state("c")
+    s["_output_dir"] = str(tmp_path)
+    s["_detected_os"] = "windows"
+    (tmp_path.parent / "input").mkdir(parents=True, exist_ok=True)
+
+    s = analyze.run(s)
+
+    assert s["_analyze_timed_out"] is True
+    gap = [f for f in s["_findings"] if f.get("confidence") == "unknown"
+           and "truncated" in f.get("claim", "").lower()]
+    assert gap, "expected a confidence='unknown' truncation gap finding"
+    assert gap[0]["pins"], "gap finding must carry at least one pin"
+    # RCA loop did not spin to the cap on a timeout
+    assert s["_analyze_iter"] == 1
