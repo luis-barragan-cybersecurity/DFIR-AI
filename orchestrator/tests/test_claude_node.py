@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import textwrap
 
 import pytest
 
@@ -178,9 +179,6 @@ def test_subagent_result_defaults_not_timed_out():
     assert r.timeout_reason == ""
 
 
-import textwrap
-
-
 def _write_fake_claude(tmp_path, body: str):
     """Write an executable fake `claude` whose bash body is `body`."""
     import stat as _stat
@@ -208,7 +206,7 @@ def test_monitor_keeps_cpu_busy_process_alive(tmp_path):
     fake = _write_fake_claude(
         tmp_path,
         "cat >/dev/null\n"
-        "python3 -c 'import time; t=time.time()\\nwhile time.time()-t<2: pass'\n"
+        "python3 -c 'import time; time.sleep(0.1); t=time.time()\\nwhile time.time()-t<2: pass'\n"
         "echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'\n",
     )
     rc, out, err, timed_out, reason = _run_with_liveness_monitor(

@@ -133,6 +133,17 @@ def _read_stream(stream: Any, buf: list[str], last_ts: list[float]) -> None:
         pass  # stream closed under us on kill
 
 
+def _write_stdin(stream: Any, data: str) -> None:
+    """Feed the prompt to the child's stdin in a daemon thread so a prompt
+    larger than the OS pipe buffer can't block the monitor before the stdout/
+    stderr readers start draining."""
+    try:
+        stream.write(data)
+        stream.close()
+    except (BrokenPipeError, OSError, ValueError):
+        pass
+
+
 def _kill_group(proc: "subprocess.Popen[str]") -> None:
     """SIGTERM the whole process group, grace, then SIGKILL. Kills the agent
     plus its mh-mcp-server and any tool subprocesses (start_new_session put
@@ -166,18 +177,15 @@ def _run_with_liveness_monitor(
     Idle = no stdout/stderr line AND no process-group CPU advance for
     idle_timeout seconds. A kill (idle or ceiling) terminates the whole group
     and returns timed_out=True rather than raising.
+
+    Callers should pass poll_sec < idle_timeout: idle is only checked once per
+    poll, so a poll larger than the idle window delays detection.
     """
     proc = subprocess.Popen(  # noqa: S603
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True, cwd=cwd, env=env,
         start_new_session=True,
     )
-    try:
-        if proc.stdin is not None:
-            proc.stdin.write(prompt)
-            proc.stdin.close()
-    except (BrokenPipeError, OSError):
-        pass
 
     out_buf: list[str] = []
     err_buf: list[str] = []
@@ -186,6 +194,8 @@ def _run_with_liveness_monitor(
         threading.Thread(target=_read_stream, args=(proc.stdout, out_buf, last_output), daemon=True),
         threading.Thread(target=_read_stream, args=(proc.stderr, err_buf, last_output), daemon=True),
     ]
+    if proc.stdin is not None:
+        threads.append(threading.Thread(target=_write_stdin, args=(proc.stdin, prompt), daemon=True))
     for t in threads:
         t.start()
 
