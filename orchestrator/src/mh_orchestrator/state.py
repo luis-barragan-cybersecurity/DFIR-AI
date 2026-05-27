@@ -76,6 +76,10 @@ class IncidentState(TypedDict, total=False):
     # incident_summary.md + accuracy-report.md instead of being silently
     # absorbed.
     _rca_capped: bool
+    # True when the analyze RCA loop exited because a subagent call hit the
+    # liveness timeout (idle or ceiling) rather than completing. Surfaced by
+    # session_finalize / accuracy-report as a disclosed coverage gap.
+    _analyze_timed_out: bool
     # ATT&CK techniques that have no D3FEND crosswalk coverage. Populated by
     # d3fend_recommend; surfaced by session_finalize in incident_summary.md so
     # the operator sees which techniques the system DOESN'T have countermeasure
@@ -122,6 +126,7 @@ def new_state(incident_id: str) -> IncidentState:
         "_analyze_iter": 0,
         "_rca_complete": False,
         "_rca_capped": False,
+        "_analyze_timed_out": False,
         "_compliance_gaps": [],
         "_triage_false_positive": False,
         "_reinfection_detected": False,
@@ -161,6 +166,7 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "_analyze_iter": s.get("_analyze_iter", 0),
         "_rca_complete": s.get("_rca_complete", False),
         "_rca_capped": s.get("_rca_capped", False),
+        "_analyze_timed_out": s.get("_analyze_timed_out", False),
         "_compliance_gaps": list(s.get("_compliance_gaps", [])),
         "_triage_false_positive": s.get("_triage_false_positive", False),
         "_reinfection_detected": s.get("_reinfection_detected", False),
@@ -199,6 +205,7 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["_analyze_iter"] = d.get("_analyze_iter", 0)
     s["_rca_complete"] = d.get("_rca_complete", False)
     s["_rca_capped"] = d.get("_rca_capped", False)
+    s["_analyze_timed_out"] = d.get("_analyze_timed_out", False)
     s["_compliance_gaps"] = list(d.get("_compliance_gaps", []))
     s["_triage_false_positive"] = d.get("_triage_false_positive", False)
     s["_reinfection_detected"] = d.get("_reinfection_detected", False)

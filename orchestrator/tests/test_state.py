@@ -116,3 +116,11 @@ def test_state_roundtrip_preserves_internal_flags() -> None:
     assert s2["eradication_actions"] == [{"id": "ERADICATE-1", "advisory_only": True}]
     assert s2["recovery_actions"] == [{"id": "RECOVER-1", "advisory_only": True}]
     assert s2["remediation_plan"] == [{"control_id": "IR-4", "advisory_only": True}]
+
+
+def test_new_state_has_analyze_timed_out_false():
+    from mh_orchestrator.state import deserialize_state, new_state, serialize_state
+    s = new_state("c")
+    assert s["_analyze_timed_out"] is False
+    # round-trips through serialize/deserialize
+    assert deserialize_state(serialize_state(s))["_analyze_timed_out"] is False
