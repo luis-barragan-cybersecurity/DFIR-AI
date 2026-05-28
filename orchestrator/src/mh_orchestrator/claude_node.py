@@ -8,10 +8,42 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+class HeadlessBillingError(RuntimeError):
+    """Raised when `claude -p` fails specifically because headless mode
+    is gated by billing (separate API credit pool, distinct from the
+    subscription / Max bucket). Distinct from generic subagent failure so
+    the orchestrator-level catch can surface a clear ``rerun in --interactive``
+    hint instead of generic exit-code error.
+
+    Detection is heuristic: the wrapper greps the combined stdout+stderr
+    for substrings like "credit balance", "out of credits", "api credits",
+    "402 Payment Required", etc. Liberal on purpose — the exact Anthropic
+    wording varies across CLI versions.
+    """
+
+
+# Liberal regex — matches the most common billing-error substrings. False
+# positives are fine here; a false positive just means the orchestrator
+# raises HeadlessBillingError and the user gets a "re-run with --interactive"
+# hint, which is the same advice they'd get from any other -p failure mode.
+_BILLING_RE = re.compile(
+    r"(credit balance|out of credits|api credits|insufficient credits"
+    r"|payment required|\b402\b|requires.*credits|requires.*api.*key"
+    r"|headless.*not.*available|need.*top.*up|billing.*required)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_billing(text: str) -> bool:
+    """Return True if `text` contains a billing-shaped error marker."""
+    return bool(text) and bool(_BILLING_RE.search(text))
 
 
 def should_stub(node_name: str) -> bool:
@@ -88,6 +120,24 @@ def invoke_subagent(
             parsed.append(msg)
             if msg.get("type") == "result" and msg.get("subtype") == "success":
                 final_text = msg.get("result", "") or ""
+
+    # Defense-in-depth: if the subprocess exited non-zero AND the combined
+    # output looks like a billing/credit error, raise HeadlessBillingError so
+    # the caller (analyze/triage/verifier_pass nodes) can surface a clean
+    # message instead of a generic RuntimeError. The preflight in bin/mh
+    # should catch this case before the orchestrator starts, but this
+    # protects the mid-run case where the preflight passed but credits
+    # ran out partway through.
+    if proc.returncode != 0:
+        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        if _looks_like_billing(combined):
+            raise HeadlessBillingError(
+                f"claude -p exit={proc.returncode} with billing-shaped error. "
+                f"Re-run with --interactive (subscription path) or top up at "
+                f"https://console.anthropic.com/billing. "
+                f"Output excerpt: {combined[:300]!r}"
+            )
+
     return SubagentResult(
         exit_code=proc.returncode,
         stdout=proc.stdout,
