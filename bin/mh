@@ -447,6 +447,26 @@ EOF
         info "    install:          https://docs.claude.com/en/docs/claude-code/quickstart"
         pf_ok=0
     fi
+    # Eager mode-pick: no API key → default to --interactive.
+    #
+    # Headless mode (`claude -p`, used by the LangGraph orchestrator's
+    # triage/analyze/verifier_pass nodes) bills against the API credit
+    # pool, not the Pro/Max subscription. A subscription-only user has
+    # no realistic way to run LangGraph successfully — they'd hit a
+    # billing error at the first LLM-invoking node. Default to
+    # --interactive immediately so the TUI path (which DOES use the
+    # subscription bucket) is what runs.
+    #
+    # Override: if the user is sure their key/credits work and wants the
+    # full LangGraph pipeline, they can set ANTHROPIC_API_KEY explicitly
+    # and re-run.
+    if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && (( interactive == 0 )); then
+        info "  no ANTHROPIC_API_KEY in env — defaulting to --interactive"
+        info "                                (subscription path; bills against Pro/Max plan,"
+        info "                                 no API credits needed; skill-driven Claude TUI)"
+        interactive=1
+    fi
+
     # Claude auth: format check + live API probe (Tier A + Tier C). Costs
     # ≈ $0.0000004 per `mh run` in API-key mode (one claude-haiku-4-5 call
     # at max_tokens=1). Subscription mode pings via `claude -p` instead.
