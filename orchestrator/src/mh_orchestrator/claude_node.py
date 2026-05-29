@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -244,6 +246,37 @@ def _run_with_liveness_monitor(
     return rc, "".join(out_buf), "".join(err_buf), timed_out, reason
 
 
+def _write_subagent_trace(
+    subagent_name: str, stdout: str, stderr: str,
+) -> None:
+    """Persist subagent subprocess stdout/stderr to <OUTPUT_PATH>/_trace/.
+
+    No-op when OUTPUT_PATH is unset (e.g., direct unit-test invocations
+    that don't go through `bin/mh run`). Failures here are swallowed —
+    the pipeline must not break because trace capture couldn't write.
+
+    Rationale: the agent's natural-language reply is unreliable (in the
+    earlier run it claimed "DONE 5 findings recorded" while
+    findings.json was []). The stream-json stdout contains every actual
+    tool_use block, and stderr surfaces MCP-server connection / auth
+    failures — both invisible without persisting.
+    """
+    output_path = os.environ.get("OUTPUT_PATH")
+    if not output_path:
+        return
+    try:
+        trace_dir = Path(output_path) / "_trace"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        # Lowercase + non-alphanumerics-to-underscore for a stable filename.
+        slug = re.sub(r"[^a-z0-9]+", "_", subagent_name.lower()).strip("_") or "subagent"
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        (trace_dir / f"{slug}_{ts}.stdout.jsonl").write_text(stdout)
+        (trace_dir / f"{slug}_{ts}.stderr.log").write_text(stderr)
+    except OSError:
+        # Disk full, permission denied, anything — debugging trace is
+        # best-effort and must never break the pipeline.
+        return
+
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if raw is None:
@@ -307,6 +340,7 @@ def invoke_subagent(
         )
 
     parsed, final_text = _parse_stream_json(stdout) if headless else ([], "")
+    _write_subagent_trace(subagent_name, stdout, stderr)
     return SubagentResult(
         exit_code=rc, stdout=stdout, stderr=stderr,
         parsed_messages=parsed, final_text=final_text,

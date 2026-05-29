@@ -287,3 +287,73 @@ def test_invoke_subagent_returns_timed_out_on_idle(tmp_path, monkeypatch):
     result = invoke_subagent(subagent_name="WindowsAgent", prompt="go", headless=True)
     assert result.timed_out is True
     assert result.timeout_reason == "idle"
+
+
+# ─── Trace capture (subagent forensic trail) ───────────────────────────────
+#
+# The agent's narrative reply is unreliable: in the earlier run it claimed
+# 'DONE 5 findings recorded' while findings.json was []. The only trustworthy
+# signal is the raw stream-json from `claude -p --output-format stream-json`,
+# which shows every tool_use block. invoke_subagent receives that text but
+# never persists it — leaving operators (and future debugging) blind.
+
+def test_invoke_subagent_writes_stdout_trace_when_output_path_set(
+    capturing_claude, tmp_path, monkeypatch,
+):
+    """When OUTPUT_PATH is set, invoke_subagent persists stdout to
+    <OUTPUT_PATH>/_trace/<subagent_lower>_*.stdout.jsonl so the actual
+    stream-json (tool_use blocks, MCP failures) is recoverable post-hoc."""
+    monkeypatch.setenv("MH_HOME", str(tmp_path))
+    output_dir = tmp_path / "case-out"
+    output_dir.mkdir()
+    monkeypatch.setenv("OUTPUT_PATH", str(output_dir))
+    from mh_orchestrator.claude_node import invoke_subagent
+    invoke_subagent(subagent_name="WindowsAgent", prompt="ping", headless=True)
+
+    trace_dir = output_dir / "_trace"
+    assert trace_dir.exists(), "expected _trace/ directory created under OUTPUT_PATH"
+    stdout_files = list(trace_dir.glob("windowsagent_*.stdout.jsonl"))
+    assert stdout_files, f"no stdout trace file written; contents: {list(trace_dir.iterdir())}"
+    # The fake claude prints one stream-json result line — confirm it landed.
+    body = stdout_files[0].read_text()
+    assert '"type":"result"' in body or '"type": "result"' in body
+
+
+def test_invoke_subagent_writes_stderr_trace(capturing_claude, tmp_path, monkeypatch):
+    """stderr also captured — that's where MCP-server connection failures
+    and authentication errors surface."""
+    monkeypatch.setenv("MH_HOME", str(tmp_path))
+    output_dir = tmp_path / "case-out"
+    output_dir.mkdir()
+    monkeypatch.setenv("OUTPUT_PATH", str(output_dir))
+    # Extend fake to emit a stderr line so we can assert capture.
+    fake = tmp_path / "bin" / "claude"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "cat >/dev/null\n"
+        "echo 'sample-stderr-line' >&2\n"
+        "echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'\n"
+    )
+    import stat as _stat
+    fake.chmod(fake.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP)
+
+    from mh_orchestrator.claude_node import invoke_subagent
+    invoke_subagent(subagent_name="WindowsAgent", prompt="ping", headless=True)
+
+    trace_dir = output_dir / "_trace"
+    stderr_files = list(trace_dir.glob("windowsagent_*.stderr.log"))
+    assert stderr_files, "no stderr trace file written"
+    assert "sample-stderr-line" in stderr_files[0].read_text()
+
+
+def test_invoke_subagent_no_trace_when_output_path_absent(
+    capturing_claude, tmp_path, monkeypatch,
+):
+    """When OUTPUT_PATH is not set (e.g., unit-test path), capture is a
+    no-op. The pipeline must not fail just because no trace dir is configured."""
+    monkeypatch.setenv("MH_HOME", str(tmp_path))
+    monkeypatch.delenv("OUTPUT_PATH", raising=False)
+    from mh_orchestrator.claude_node import invoke_subagent
+    # Should not raise.
+    result = invoke_subagent(subagent_name="WindowsAgent", prompt="ping", headless=True)
+    assert result.exit_code == 0
