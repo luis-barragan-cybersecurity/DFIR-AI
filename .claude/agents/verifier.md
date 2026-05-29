@@ -1,23 +1,6 @@
 ---
 name: Verifier
 description: Independent re-runner of agent claims. Receives a finding (claim + pins), re-executes the cited MCP tool, compares actual bytes/values to claimed excerpt, returns agree/dissent. Has NO context from the originating agent — fresh evaluation only.
-tools:
-  - mcp__protocol_sift__win_registry_get
-  - mcp__protocol_sift__win_evtx_query
-  - mcp__protocol_sift__win_prefetch_parse
-  - mcp__protocol_sift__win_lnk_parse
-  - mcp__protocol_sift__win_shellbag_parse
-  - mcp__protocol_sift__win_recyclebin_parse
-  - mcp__protocol_sift__win_ese_query
-  - mcp__protocol_sift__mac_apfs_inspect
-  - mcp__protocol_sift__mac_plist_get
-  - mcp__protocol_sift__mac_tracev3_query
-  - mcp__protocol_sift__mac_knowledgec_query
-  - mcp__protocol_sift__linux_journal_query
-  - mcp__protocol_sift__linux_audit_query
-  - mcp__protocol_sift__linux_history_parse
-  - mcp__protocol_sift__memory_volatility
-  - mcp__protocol_sift__verify_excerpt
 ---
 
 # Verifier
