@@ -105,6 +105,52 @@ def test_triage_timeout_fails_open_to_unknown(tmp_path, monkeypatch) -> None:
     assert s["_triage_false_positive"] is False
 
 
+def test_triage_prompt_includes_tool_call_discipline_directive(tmp_path, monkeypatch) -> None:
+    """The triage subagent prompt MUST include a directive forbidding
+    parallel tool-call batches. The Claude Code product system prompt
+    instructs the agent to 'Maximize parallel tool calls' (extracted
+    verbatim from claude v2.1.157 binary), which in turn triggers the
+    harness's fail-fast sibling-cancellation cascade — a single Bash
+    error (e.g. exit 2 from sudo) cancels every other in-flight sibling.
+    Observed in a prior triage trace:
+    10 parallel Bash blocks in one API message, 5 cancelled-as-parallel
+    after a single sibling errored. The user-supplied prompt is
+    concatenated AFTER the product system prompt, so an explicit
+    'one tool call per turn' directive empirically overrides the
+    system-prompt parallel directive on Claude 4-series."""
+    from mh_orchestrator.claude_node import SubagentResult
+    from mh_orchestrator.nodes import triage as triage_mod
+
+    monkeypatch.setenv("MH_NO_CLAUDE", "0")
+    captured: dict[str, str] = {}
+
+    def fake_invoke(**kwargs):
+        captured["prompt"] = kwargs.get("prompt", "")
+        return SubagentResult(exit_code=0, stdout="", stderr="",
+                              final_text="high")
+
+    monkeypatch.setattr(triage_mod, "invoke_subagent", fake_invoke)
+
+    s = new_state("c")
+    s["_output_dir"] = str(tmp_path)
+    s["_detected_os"] = "windows"
+    triage_mod.run(s)
+
+    assert "prompt" in captured, "invoke_subagent was not called"
+    prompt = captured["prompt"]
+    lowered = prompt.lower()
+    assert "one tool call" in lowered, (
+        "triage prompt missing 'one tool call per turn' directive — needed "
+        "to override Claude Code's product-default 'Maximize parallel tool "
+        "calls' system prompt and prevent the harness fail-fast cascade."
+    )
+    assert "do not batch" in lowered, (
+        "triage prompt missing explicit 'do NOT batch' clause — without it "
+        "the agent may interpret 'one call' as 'one call per category' "
+        "rather than 'one call per assistant turn'."
+    )
+
+
 def test_memory_dump_routes_to_windows_agent(tmp_path: Path) -> None:
     """Regression: rocba-memory case shipped a Windows memory image (Rocba-Memory.raw).
     Previously memory_dump fell through to WindowsAgent via the fallback default —

@@ -70,7 +70,21 @@ def run(state: IncidentState) -> IncidentState:
                 "critical for a real incident, OR 'false_positive' ONLY if you can "
                 "affirmatively confirm it is benign / no incident. When in doubt, "
                 "pick a severity — do NOT reply false_positive unless you are sure, "
-                "because that suppresses the entire investigation."
+                "because that suppresses the entire investigation.\n\n"
+                # Tool-call discipline override. Claude Code's product system
+                # prompt instructs the agent to 'Maximize parallel tool calls'.
+                # The harness uses fail-fast scheduling: when one sibling in a
+                # parallel batch errors, the rest are cancelled. Observed in
+                # a prior triage trace: 10 parallel Bash
+                # blocks in one API message, 5 cancelled-as-parallel after a
+                # single sibling errored (~45% waste). User-supplied prompt
+                # is concatenated AFTER the product system prompt, so this
+                # explicit directive overrides it. See
+                # ~/handoffs/parallel-tool-call-cancellations-FINDINGS-2026-05-30.md.
+                "Tool-call discipline: issue ONE tool call per assistant turn "
+                "and wait for the result before issuing the next. Do NOT batch "
+                "multiple tool calls in a single response. A sibling failure "
+                "in a batch cancels the rest, wasting context and wall time."
             ),
             headless=True,
         )

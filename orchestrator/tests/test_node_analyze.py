@@ -274,3 +274,46 @@ def test_build_analyze_prompt_includes_iter_num_and_case_id(tmp_path):
     assert "Iteration: 2" in prompt
     assert case_dir.name in prompt
     assert "windows" in prompt.lower()
+
+
+def test_build_analyze_prompt_includes_tool_call_discipline_directive(tmp_path):
+    """The analyze prompt MUST include a directive forbidding parallel
+    tool-call batches. Same root cause as the triage directive (Claude Code
+    product prompt instructs parallel batches; harness cancels siblings on
+    first error) but the cost is much higher here: Volatility plugins
+    are minutes each, not milliseconds, so a single parallel-batch cancel
+    can lose 30+ minutes of wall time on the 7200s analyze ceiling. Root
+    cause documented in
+    ~/handoffs/parallel-tool-call-cancellations-FINDINGS-2026-05-30.md
+    (subagent confirmed H5 with verbatim extraction of the product
+    system-prompt 'Maximize use of parallel tool calls' directive from
+    the claude v2.1.157 binary)."""
+    s, case_dir = _make_state_with_evidence_dir(tmp_path)
+    prompt = analyze._build_analyze_prompt(s, case_dir, iter_num=1)
+    lowered = prompt.lower()
+    assert "one tool call" in lowered, (
+        "analyze prompt missing 'one tool call per turn' directive — needed "
+        "to override Claude Code's product-default 'Maximize parallel tool "
+        "calls' system prompt and prevent the harness fail-fast cascade."
+    )
+    assert "do not batch" in lowered, (
+        "analyze prompt missing explicit 'do NOT batch' clause."
+    )
+
+
+def test_build_analyze_prompt_discipline_directive_present_on_iter2(tmp_path):
+    """The directive is unconditional — it must appear on every iteration,
+    not just iter 1. Iter 2 carries prior findings + is more context-loaded;
+    that's exactly where parallel-batch cancellations are most expensive."""
+    s, case_dir = _make_state_with_evidence_dir(tmp_path)
+    s["_findings"] = [
+        {
+            "finding_id": "PRIOR-W-001-anchor",
+            "claim": "Anchor finding from iter 1.",
+            "confidence": "confirmed",
+        },
+    ]
+    prompt = analyze._build_analyze_prompt(s, case_dir, iter_num=2)
+    lowered = prompt.lower()
+    assert "one tool call" in lowered
+    assert "do not batch" in lowered
