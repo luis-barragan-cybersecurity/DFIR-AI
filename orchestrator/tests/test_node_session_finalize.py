@@ -217,3 +217,20 @@ def test_finalize_still_writes_state_and_history(tmp_path: Path) -> None:
     assert (tmp_path / "agent_messages.jsonl").exists()
     assert (tmp_path / "compliance_map.json").exists()
     assert (tmp_path / "incident_summary.md").exists()
+
+
+def test_incident_summary_discloses_analyze_timeout(tmp_path):
+    """A run where analyze hit a liveness timeout must disclose it in the
+    Acknowledged Gaps section of incident_summary.md."""
+    from mh_orchestrator.nodes import session_finalize
+    from mh_orchestrator.state import new_state
+
+    s = new_state("c")
+    s["_output_dir"] = str(tmp_path)
+    s["_analyze_timed_out"] = True
+    session_finalize.run(s)
+
+    summary = (tmp_path / "incident_summary.md").read_text()
+    assert "## Acknowledged Gaps" in summary
+    assert "timeout" in summary.lower()
+    assert "analyze" in summary.lower()

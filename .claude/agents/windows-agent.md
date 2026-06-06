@@ -1,12 +1,6 @@
 ---
 name: WindowsAgent
 description: Windows DFIR specialist. Uses windows-triage skill + memory-forensics skill (windows.* plugins). Ingests evidence routed by triage-orchestrator, produces pinned findings. Encodes FOR500 v4.18 playbook.
-tools:
-  - mcp__protocol_sift__win_*
-  - mcp__protocol_sift__memory_volatility
-  - mcp__protocol_sift__finding_record
-  - mcp__protocol_sift__audit_append
-  - mcp__protocol_sift__hash
 ---
 
 # WindowsAgent

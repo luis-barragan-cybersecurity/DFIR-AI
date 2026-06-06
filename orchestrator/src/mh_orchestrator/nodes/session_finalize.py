@@ -87,6 +87,7 @@ def _render_incident_summary(state: IncidentState) -> str:
     verifier_complete = state.get("_verifier_complete", False)
     human_approval = state.get("human_approval_required", False)
     rca_capped = state.get("_rca_capped", False)
+    analyze_timed_out = state.get("_analyze_timed_out", False)
     compliance_gaps = list(state.get("_compliance_gaps", []) or [])
     parse_errors = sum(
         1 for d in state.get("_verifier_decisions", []) or []
@@ -96,7 +97,7 @@ def _render_incident_summary(state: IncidentState) -> str:
     # Honesty fix (#5, #10): render explicit gap sections when present.
     # Judges score gap-acknowledgment positively per the hackathon rubric.
     gap_section = ""
-    if rca_capped or compliance_gaps or parse_errors:
+    if rca_capped or analyze_timed_out or compliance_gaps or parse_errors:
         gap_lines = ["## Acknowledged Gaps\n", "\n"]
         if rca_capped:
             gap_lines.append(
@@ -104,6 +105,14 @@ def _render_incident_summary(state: IncidentState) -> str:
                 "at the iteration ceiling without naturally completing. Findings "
                 "below may be incomplete. See `audit.jsonl` event "
                 "`analyze_iter_cap_reached`.\n"
+            )
+        if analyze_timed_out:
+            gap_lines.append(
+                "- **Analyze hit a liveness timeout** — the analysis subagent "
+                "was terminated on an idle/ceiling timeout before signalling "
+                "completion, so findings may be incomplete. See `audit.jsonl` "
+                "event `analyze_timeout` and the `confidence='unknown'` "
+                "`analyze-timeout-gap-*` finding in `findings.json`.\n"
             )
         if parse_errors:
             gap_lines.append(
