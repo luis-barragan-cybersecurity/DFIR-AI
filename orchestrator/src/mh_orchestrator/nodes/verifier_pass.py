@@ -292,6 +292,10 @@ def run(state: IncidentState) -> IncidentState:
                                   "verifier_iter": pass_iter, "timed_out": True,
                                   "rationale": decision["rationale"]},
                     )
+                    try:
+                        write_checkpoint(state, out)
+                    except OSError:
+                        pass
                     continue
 
                 # Trust-contract fix (#4 / B2): try the persona's CONTRACTED
@@ -386,6 +390,19 @@ def run(state: IncidentState) -> IncidentState:
                 },
             )
 
+            # Per-decision checkpoint. Pre-fix verifier_pass only wrote
+            # state.json + state.history.jsonl at the end of the loop, so
+            # a kill mid-loop (rocba 2026-06-06: SIGHUP killed Python after
+            # F-016 completed, losing F-017's verdict) lost the entire
+            # _verifier_decisions list. Now every decision lands on disk
+            # the instant it's recorded — a kill loses at most the
+            # in-flight finding, never the work behind it. Cheap: state
+            # serialization is a few hundred KB.
+            try:
+                write_checkpoint(state, out)
+            except OSError:
+                pass  # never let checkpoint IO kill the loop
+
     # ─── Convergence / loop-control decision ───────────────────────────
     #
     # Pre-fix this unconditionally set `_verifier_complete = True`, which
@@ -452,6 +469,16 @@ def run(state: IncidentState) -> IncidentState:
               "next": "correlate" if state["_verifier_complete"] else "analyze",
               "advisory_only": True},
     )
-    write_checkpoint(state, out)
-    append_history(state, out, node=NODE_NAME)
+    # End-of-loop checkpoint also IO-guarded — disk-full / permission
+    # errors must not crash the orchestrator. The per-decision checkpoints
+    # inside the loop have already persisted the work; this final write is
+    # belt-and-suspenders.
+    try:
+        write_checkpoint(state, out)
+    except OSError:
+        pass
+    try:
+        append_history(state, out, node=NODE_NAME)
+    except OSError:
+        pass
     return state

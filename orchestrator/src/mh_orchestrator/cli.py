@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -12,7 +13,47 @@ from .graph import DEFAULT_RECURSION_LIMIT, build_graph
 from .state import new_state
 
 
+def _make_orchestrator_durable() -> None:
+    """Ignore terminal-lifecycle signals so a closed terminal, sleeping
+    laptop, or dropped SSH connection can't silently kill a long-running
+    triage mid-way through.
+
+    The rocba-memory run (2026-06-06) lost the F-017 verifier verdict
+    ($1.08 of completed forensic work) when the parent terminal closed
+    while the orchestrator was between recording two decisions. The
+    Verifier subprocess had ALREADY returned cleanly — the parent
+    Python received SIGHUP and died before writing the verdict to
+    agent_messages.jsonl / audit.jsonl.
+
+    What we ignore and why:
+      - SIGHUP   — sent on controlling-terminal close (Terminal ⌘W,
+                   ssh disconnect, screen-saver kicking off in some
+                   configurations). This is the primary killer.
+      - SIGPIPE  — printing to a closed pipe (e.g. terminal closed but
+                   stdout is still going to it). Default action terminates
+                   the process; we instead let write() raise EPIPE which
+                   the TUI / logger can catch and absorb.
+
+    What we DON'T ignore (operator must still be able to kill the job):
+      - SIGINT   — Ctrl+C. Operator explicitly asked to stop.
+      - SIGTERM  — `kill <pid>`. Operator explicitly asked to stop.
+      - SIGKILL  — uncatchable by design. OOM / explicit `kill -9`.
+    """
+    for sig_name in ("SIGHUP", "SIGPIPE"):
+        sig = getattr(signal, sig_name, None)
+        if sig is None:
+            continue  # not available on this platform (e.g. Windows)
+        try:
+            signal.signal(sig, signal.SIG_IGN)
+        except (OSError, ValueError):
+            # Subprocess context where this signal can't be set —
+            # acceptable, we're best-effort.
+            pass
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
+    # Survive terminal/SSH/sleep events. Must happen before any heavy work.
+    _make_orchestrator_durable()
     cases_dir = Path(args.cases_dir).expanduser().resolve()
     case_dir = cases_dir / args.case_id
     input_dir = case_dir / "input"

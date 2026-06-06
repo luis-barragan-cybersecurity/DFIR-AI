@@ -14,23 +14,26 @@ Submission to the [SANS FIND EVIL!](https://findevil.devpost.com) Hackathon (Apr
 | | |
 |---|---|
 | **What** | Autonomous IR triage agent — drop evidence, get a pinned forensic report |
-| **How** | Custom MCP server + Claude Code skills/agents/hooks + LangGraph state machine |
-| **Surface** | 31 typed forensic tools across 13 modules · 14 skills · 4 specialist subagents · 5 lifecycle hooks · 20-node IR graph (14 IR + `session_init` + `session_finalize` + `suppress` + `correlate` + `manifest_ingest` + `scope`) |
-| **OS coverage** | Windows (registry, EVTX, Prefetch, LNK, MFT, Amcache via EZ Tools), macOS (plist, KnowledgeC), Linux (shell history, journald, audit), Memory (Volatility 3 — 45+ plugins; MemProcFS FindEvil), Disk (Sleuth Kit — fls/icat/mmls/mactime/istat), Timeline (Plaso log2timeline + psort), Network (tshark, Zeek), Malware/Carving (YARA, bulk_extractor, binwalk, strings) |
+| **How** | Custom MCP server + provider-agnostic AI driver + skills/agents/hooks + LangGraph state machine |
+| **AI engines** | **Anthropic Claude Code · Anthropic API · OpenAI · Ollama (local)** — one command, auto-detected, swappable via `MH_PROVIDER` |
+| **Surface** | 47 typed forensic tools across 13 modules · 14 skills · 4 specialist subagents · 5 lifecycle hooks · 20-node IR graph (14 IR + `session_init` + `session_finalize` + `suppress` + `correlate` + `manifest_ingest` + `scope`) |
+| **OS coverage** | Windows (registry, EVTX, Prefetch, LNK, MFT, Amcache via EZ Tools), macOS (plist, KnowledgeC), Linux (shell history, journald, audit), Memory (Volatility 3 — 45+ plugins; MemProcFS FindEvil), Disk (Sleuth Kit — fls/icat/mmls/mactime/istat), Timeline (Plaso log2timeline + psort), Network (tshark, Zeek, pcap→Zeek/NetFlow/PassiveDNS), Malware/Carving (YARA, bulk_extractor, binwalk, strings) |
 | **Frameworks** | NIST CSF 2.0 · ISO/IEC 27035-1:2023 · SANS PICERL · MITRE ATT&CK · D3FEND |
 | **Trust** | Schema-rejected un-pinned findings · independent Verifier subagent with self-correction loop · cross-finding Correlator · **sha256-chained audit log** · **SHA256 manifest at ingest** · `mh verify` spoliation re-check |
 | **Deploy** | One-line installer (`bash scripts/install.sh`) · Host install · Docker (advanced — see [`docs/deployment.md`](docs/deployment.md)) |
-| **Auth** | Pro/Max subscription · Anthropic API key · Bedrock · Vertex |
-| **Code** | ~10K LoC Python · 58 test files · 360 tests · CI green |
+| **Auth** | Claude subscription · Anthropic API key · OpenAI API key · Ollama (local, no key) · Bedrock · Vertex |
+| **Code** | ~12K LoC Python · 60+ test files · 435 tests · CI green |
 | **Demo video** | _Recording in W6 (May 31 – Jun 6, 2026) — link added on upload._ Must show verifier dissent → re-analyze self-correction (per hackathon rules). |
 
 ---
 
 ## What This Is
 
-MemoryHound turns Claude Code into an autonomous DFIR analyst. You drop evidence into a folder, run one command, and get back a structured forensic report whose every claim is pinned to a specific tool call against a specific artifact.
+MemoryHound turns any major AI engine into an autonomous DFIR analyst. You drop evidence into a folder, run one command, and get back a structured forensic report whose every claim is pinned to a specific tool call against a specific artifact.
 
-Inspired by Daniel Miessler's [PAI](https://github.com/danielmiessler/PAI) pattern: the `.claude/` directory plus a custom MCP server give Claude the skills, subagents, hooks, and forensic primitives to operate as a domain specialist — without modifying Claude itself.
+The custom MCP server's 47 forensic tools are the substrate; the AI driver is swappable — Claude Code, Anthropic API, OpenAI, or Ollama running locally on a laptop. Same orchestrator, same `findings.json`, same audit trail, regardless of engine. A judge with a Claude subscription, a shop on OpenAI, and an air-gapped DFIR lab on Ollama all run the same `./bin/mh run` command.
+
+Inspired by Daniel Miessler's [PAI](https://github.com/danielmiessler/PAI) pattern: the `.claude/` directory plus the custom MCP server give the AI driver the skills, subagents, hooks, and forensic primitives to operate as a domain specialist — without modifying the underlying model.
 
 ```
 You drop:    Evidence files (memory dumps, registry hives, EVTX, plist, etc.)
@@ -57,15 +60,25 @@ bash scripts/install.sh
 
 The installer checks Python 3.11+, checks the `claude` CLI, then runs `bin/mh init` (creates `.venv`, installs deps). It surfaces missing system packages with the exact `brew`/`apt` command to fix them — it never installs anything for you silently.
 
-Once installed, sign in to Claude Code (one-time) and run the quickstart:
+Once installed, pick **any** AI engine — MemoryHound is provider-agnostic:
 
 ```bash
-claude /login                     # Pro/Max subscription (recommended)
-# OR
-export ANTHROPIC_API_KEY=sk-ant-...   # API key
+# 1) Anthropic Claude Code CLI (Pro/Max subscription)  — default if installed
+claude /login
+
+# 2) Anthropic API direct (no Claude Code needed)
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# 3) OpenAI (gpt-4o by default)
+export OPENAI_API_KEY=sk-...
+
+# 4) Ollama — local models, $0/run, air-gapped DFIR
+ollama serve & ollama pull llama3.3   # https://ollama.com
 
 ./bin/mh quickstart               # auth check + stub demo (no tokens spent)
 ```
+
+`./bin/mh run …` auto-detects which provider you have. Set `MH_PROVIDER` (`anthropic-cli` / `anthropic-api` / `openai` / `ollama`) to force one explicitly. The same orchestrator, same `findings.json`, same audit trail — regardless of engine.
 
 After `mh quickstart` finishes, full IR triage is **one command**. Point it at a file, a folder, or an existing case name — it figures out the rest:
 
@@ -86,6 +99,37 @@ After triage:
 ```
 
 > Need a containerized run, a SIFT/Ubuntu host bootstrap with the full forensics toolchain, or the prebuilt image? See [`docs/deployment.md`](docs/deployment.md).
+
+---
+
+## AI Provider Matrix
+
+MemoryHound's MCP forensic tool surface (47 tools across 13 modules) is the substrate; the AI engine driving the subagent loop is swappable. Pick whichever the judge (or shop, or air-gapped lab) has.
+
+| Provider              | `MH_PROVIDER`     | Auth                           | Model default                | Notes                                                       |
+|-----------------------|-------------------|--------------------------------|------------------------------|-------------------------------------------------------------|
+| Anthropic Claude Code | `anthropic-cli`   | `claude /login` or API key     | Claude (via CLI)             | Default; subscription supports interactive TUI.             |
+| Anthropic API direct  | `anthropic-api`   | `ANTHROPIC_API_KEY`            | `claude-sonnet-4-5`          | No Claude Code needed. Override via `MH_ANTHROPIC_MODEL`.   |
+| OpenAI                | `openai`          | `OPENAI_API_KEY`               | `gpt-4o`                     | Function-calling tool loop. Override via `MH_OPENAI_MODEL`. |
+| Ollama (local)        | `ollama`          | none (local daemon)            | `llama3.3`                   | $0/run, air-gapped. Native + text-tag fallback tool calls.  |
+
+Auto-detect order when `MH_PROVIDER` is unset: anthropic-cli > anthropic-api > openai > ollama. Examples:
+
+```bash
+# Air-gapped DFIR with local llama3.3 — no internet, no API keys.
+MH_PROVIDER=ollama OLLAMA_HOST=http://localhost:11434 ./bin/mh run /case/memory.raw
+
+# Use a different Ollama model and force text-tag mode (for models without native tool calling).
+MH_OLLAMA_MODEL=qwen2.5:32b MH_OLLAMA_TOOLS_MODE=text ./bin/mh run /case/memory.raw
+
+# Run via the Anthropic API directly with a custom model.
+MH_PROVIDER=anthropic-api MH_ANTHROPIC_MODEL=claude-opus-4-7 ./bin/mh run /case/memory.raw
+
+# Force OpenAI even if claude is installed.
+MH_PROVIDER=openai ./bin/mh run /case/memory.raw
+```
+
+The orchestrator's per-decision checkpointing, verifier loop, audit trail, framework mapping, and TUI dashboard all work identically across providers.
 
 ---
 
@@ -131,7 +175,7 @@ Output:
 ┌──────────────────────────────────────────────────────────────────┐
 │  CLI WRAPPER          bin/mh                                      │
 │  Bash dispatcher with 14 subcommands; manages venv + auth +       │
-│  fresh-cycle output reset; shells out to claude or mh-orchestrate │
+│  fresh-cycle output reset; preflight detects active AI provider   │
 └─────────────┬───────────────────────────────────┬─────────────────┘
               │                                   │
               ▼                                   ▼
@@ -140,24 +184,36 @@ Output:
 │  Skill-driven (free-form)      │  │  LangGraph (deterministic)     │
 │                                │  │                                │
 │  claude --mcp-config …         │  │  mh-orchestrate run <id>       │
-│   │                            │  │   │                            │
+│   (anthropic-cli only)         │  │   │                            │
 │   ▼                            │  │   ▼                            │
-│  triage-orchestrator skill     │  │  17-node IR graph + 6          │
-│   │                            │  │  conditional edges             │
+│  triage-orchestrator skill     │  │  20-node IR graph + conditional│
+│   │                            │  │  edges                         │
 │   ├─→ WindowsAgent             │  │   │                            │
-│   ├─→ MacOSAgent               │  │   ├─→ ClaudeNode (LLM)         │
-│   ├─→ LinuxAgent               │  │   ├─→ deterministic nodes      │
-│   └─→ Verifier                 │  │   └─→ Verifier pass            │
-│                                │  │                                │
-│  .claude/skills/*/SKILL.md     │  │  orchestrator/src/             │
-│  .claude/agents/*.md           │  │   mh_orchestrator/nodes/       │
-└────────────┬───────────────────┘  └────────────┬───────────────────┘
-             │                                   │
-             └──────────────┬────────────────────┘
+│   ├─→ MacOSAgent               │  │   ├─→ LLM-invoking nodes ──┐   │
+│   ├─→ LinuxAgent               │  │   ├─→ deterministic nodes  │   │
+│   └─→ Verifier                 │  │   └─→ Verifier pass        │   │
+│                                │  │                            ▼   │
+│  .claude/skills/*/SKILL.md     │  │  ┌─────────────────────────┐   │
+│  .claude/agents/*.md           │  │  │ PROVIDER REGISTRY       │   │
+└────────────┬───────────────────┘  │  │ MH_PROVIDER or auto-    │   │
+             │                      │  │ detect → one of:        │   │
+             │                      │  │   anthropic-cli         │   │
+             │                      │  │   anthropic-api (SDK)   │   │
+             │                      │  │   openai (SDK)          │   │
+             │                      │  │   ollama (HTTP, local)  │   │
+             │                      │  │ orchestrator/src/       │   │
+             │                      │  │   mh_orchestrator/      │   │
+             │                      │  │   providers/            │   │
+             │                      │  └────────────┬────────────┘   │
+             │                      └───────────────┼────────────────┘
+             │                                      │
+             └──────────────┬───────────────────────┘
                             ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  CUSTOM MCP SERVER     mcp-server/src/protocol_sift_mcp/         │
-│  ─ stdio protocol; 31 typed tools across 13 modules              │
+│  ─ stdio protocol (Claude CLI) + in-process Python (other        │
+│    providers) — single tool surface, two transports              │
+│  ─ 47 typed tools across 13 modules                              │
 │  ─ schema-rejects findings without pins (finding.py)             │
 │  ─ path-escape sandbox (sandbox.py); evidence read-only          │
 │  ─ writes audit.jsonl + findings.json directly                   │
@@ -277,7 +333,7 @@ Confidence enum (`triage-orchestrator/SKILL.md`):
 - **`uncertain`** — observation suggestive but not conclusive
 - **`unknown`** — explicit gap; pinned, never guessed
 
-### MCP Tool Surface (31 tools, 13 modules)
+### MCP Tool Surface (47 tools, 13 modules)
 
 `mcp-server/src/protocol_sift_mcp/tools/` ([source](mcp-server/src/protocol_sift_mcp/tools/)):
 
@@ -297,16 +353,29 @@ Confidence enum (`triage-orchestrator/SKILL.md`):
 | `network.py` | `tshark_extract`, `zeek_log_read` | tshark protocol extract, Zeek log reader |
 | `carving.py` | `yara_scan`, `bulk_extractor`, `binwalk`, `strings_extract` | Malware/carving — YARA rule scan, bulk_extractor, binwalk, strings |
 
-### Claude Code Layer
+### AI Driver Layer
 
-`.claude/` ([source](.claude/)):
+The provider registry (`orchestrator/src/mh_orchestrator/providers/`) picks one engine at runtime via `MH_PROVIDER` or auto-detect (anthropic-cli > anthropic-api > openai > ollama). Every node calls `Provider.invoke(subagent_name, prompt, allowed_tools, headless) → SubagentResult` — the same shape regardless of engine, so triage / analyze / verifier_pass / scope code is unchanged across providers.
+
+| Provider | File | Transport | Tool surface |
+|----------|------|-----------|--------------|
+| `anthropic-cli` | `providers/anthropic_cli.py` | `claude -p` subprocess + stream-json | MCP server via stdio |
+| `anthropic-api` | `providers/anthropic_api.py` | `anthropic.Anthropic().messages.create` | In-process Python (`tool_dispatch`) |
+| `openai` | `providers/openai_provider.py` | `openai.OpenAI().chat.completions.create` | In-process Python (`tool_dispatch`) |
+| `ollama` | `providers/ollama.py` | `urllib` POST `/api/chat` (stdlib-only) | In-process Python (`tool_dispatch`) — native + `<tool>` text-tag fallback |
+
+The shared `providers/tool_dispatch.py` mirrors the MCP server's `call_tool` dispatch surface line-for-line in plain Python so non-CLI providers run the same 47 forensic tools without stdio framing.
+
+### Claude Code Layer (used by `anthropic-cli`)
+
+`.claude/` ([source](.claude/)) — drives the `anthropic-cli` provider AND provides the persona / skill source for every other provider:
 
 | Surface | Count | Files |
 |---------|-------|-------|
 | Skills | 14 | `triage-orchestrator`, `windows-triage`, `macos-triage`, `linux-triage`, `memory-forensics`, `evidence-pin`, `gap-acknowledgment`, `self-correct`, `ir-narrative`, `accuracy-report`, `exec-report`, `containment-recommender`, `remediation-planner`, `threat-hunting` |
-| Subagents | 4 | `WindowsAgent`, `MacOSAgent`, `LinuxAgent`, `Verifier` |
-| Hooks | 5 | `session-start.sh` (ingest+hash), `inject-context.sh` (UserPromptSubmit), `guard.sh` (PreToolUse trust gate), `audit.sh` (PostToolUse log), `finalize.sh` (Stop summary) |
-| Permissions | — | `allow: mcp__protocol_sift__*, Read, Glob, Grep` · `deny: Bash, WebFetch, WebSearch, Edit, Write, mcp__filesystem__write_*` |
+| Subagents | 4 | `WindowsAgent`, `MacOSAgent`, `LinuxAgent`, `Verifier` — non-CLI providers load `.claude/agents/<name>.md` as the system prompt (frontmatter stripped). |
+| Hooks | 5 | `session-start.sh` (ingest+hash), `inject-context.sh` (UserPromptSubmit), `guard.sh` (PreToolUse trust gate), `audit.sh` (PostToolUse log), `finalize.sh` (Stop summary) — fire only for the `anthropic-cli` path. |
+| Permissions | — | `allow: mcp__protocol_sift__*, Read, Glob, Grep` · `deny: Bash, WebFetch, WebSearch, Edit, Write, mcp__filesystem__write_*` (anthropic-cli only) |
 
 The `bin/mh:claude_run` wrapper extends the headless `--allowedTools` set to also include `Write` and `TodoWrite` so the agent can land `narrative.md` and `accuracy-report.md` without an interactive approval channel.
 
@@ -384,23 +453,37 @@ grep -nE "^cmd_[a-z]+\(\)" bin/mh
 
 | Variable | Effect | Default |
 |----------|--------|---------|
-| `ANTHROPIC_API_KEY` | API-key auth (alternative to `claude /login`) | unset |
-| `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` | Cloud-provider auth | unset |
+| **AI provider selection** | | |
+| `MH_PROVIDER` | Force a provider: `anthropic-cli`, `anthropic-api`, `openai`, `ollama`. Unset = auto-detect. | auto |
+| `ANTHROPIC_API_KEY` | Enables `anthropic-api` (and `anthropic-cli` API-key auth) | unset |
+| `OPENAI_API_KEY` | Enables `openai` | unset |
+| `OLLAMA_HOST` | Ollama daemon endpoint (enables `ollama` provider when reachable) | `http://localhost:11434` |
+| `MH_ANTHROPIC_MODEL` | Override `anthropic-api` model | `claude-sonnet-4-5` |
+| `MH_OPENAI_MODEL` | Override `openai` model | `gpt-4o` |
+| `MH_OLLAMA_MODEL` | Override `ollama` model | `llama3.3` |
+| `MH_OLLAMA_TOOLS_MODE` | `auto` / `native` / `text` — pick native tool calling, text-tag fallback, or auto | `auto` |
+| `MH_MAX_TOKENS` | Per-call `max_tokens` (anthropic-api / openai) | `8192` |
+| `MH_SUBAGENT_IDLE_TIMEOUT_SEC` | Kill a subagent when idle this long (no CPU, no output) | `600` |
+| `MH_SUBAGENT_MAX_SEC` | Hard wall-clock ceiling per subagent | `7200` |
+| `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` | Claude Code cloud-provider auth (applies to `anthropic-cli`) | unset |
+| **Pipeline knobs** | | |
 | `MH_HOME` | Project root override | repo dir |
 | `MH_VENV` | Python venv path | `$MH_HOME/.venv` |
 | `MH_NO_CLAUDE` | Stub LLM-invoking nodes (CI / no-token testing) | `0` |
 | `MH_BLAST_RADIUS_THRESHOLD` | `route_after_contain` escalation cutoff | `50` |
 | `MH_LG_RECURSION_LIMIT` | LangGraph recursion cap (default 50, ~3× headroom over 15-node happy path) | `50` |
-| `MH_CLAUDE_HEADLESS` | `claude -p` print mode for CI/scripts | `0` |
+| `MH_CLAUDE_HEADLESS` | `claude -p` print mode for CI/scripts (anthropic-cli only) | `0` |
 | `MH_DEMO_NONINTERACTIVE` | Skip the `mh demo --real-claude` y/N prompt | `0` |
 | `VOLATILITY_SYMBOL_PATH` | Vendored ISF symbols (Linux/macOS kernels) | `corpus/<case>/symbols/` |
 
-### Auth modes (inherits from Claude Code)
+### Auth modes (any provider works)
 
-- **Pro/Max subscription** — `claude /login` once; persistent `~/.claude/`
-- **Anthropic API key** — `export ANTHROPIC_API_KEY=sk-ant-...`
-- **AWS Bedrock** — `export CLAUDE_CODE_USE_BEDROCK=1`
-- **Google Vertex** — `export CLAUDE_CODE_USE_VERTEX=1`
+- **Claude Code subscription** — `claude /login` once; persistent `~/.claude/` (drives `anthropic-cli`)
+- **Anthropic API key** — `export ANTHROPIC_API_KEY=sk-ant-...` (drives `anthropic-api` or `anthropic-cli`)
+- **OpenAI API key** — `export OPENAI_API_KEY=sk-...` (drives `openai`)
+- **Ollama (local, no key)** — `ollama serve & ollama pull llama3.3` (drives `ollama`; air-gapped, $0/run)
+- **AWS Bedrock** — `export CLAUDE_CODE_USE_BEDROCK=1` (drives `anthropic-cli`)
+- **Google Vertex** — `export CLAUDE_CODE_USE_VERTEX=1` (drives `anthropic-cli`)
 
 ---
 
@@ -430,7 +513,7 @@ grep -nE "^cmd_[a-z]+\(\)" bin/mh
 | `mac_*` macOS tools (apfs / tracev3 / spotlight) | 🛠️ Sub-Plan 06+ |
 | `linux_journal_query`, `linux_audit_query`, `linux_systemd_units` | 🛠️ Sub-Plan 06+ |
 
-**213 tests passing** (75 mcp-server + 138 orchestrator + 2 opt-in skips). CI green on every commit.
+**656 tests passing** (221 mcp-server + 435 orchestrator + 4 opt-in skips). CI green on every commit. Includes 26 provider-abstraction tests covering MH_PROVIDER auto-detect across the four engines and in-process MCP tool dispatch.
 
 ---
 
@@ -506,7 +589,7 @@ memoryhound/
 
 Top-of-tree counts (current branch):
 - **Python:** ~10K LoC (3.5K mcp-server + 4.7K orchestrator + 1.8K scripts)
-- **Tests:** 41 test files, 213 tests passing
+- **Tests:** 60+ test files, 656 tests passing
 - **Skills:** 13 · **Subagents:** 4 · **Hooks:** 5 · **MCP tools:** 13
 - **LangGraph nodes:** 17 (14 IR + session_init + session_finalize + suppress)
 - **Conditional edges:** 6
