@@ -70,10 +70,21 @@ def test_invoke_subagent_wires_mcp_and_project_context(capturing_claude, tmp_pat
 
 
 def test_invoke_subagent_fails_loud_without_mh_home(tmp_path, monkeypatch):
-    """No silent fallback (trust contract): if MH_HOME is unset the wiring
-    cannot be built, so invoke_subagent must raise rather than spawn a blind
-    agent with no MCP config."""
+    """No silent fallback (trust contract): if MH_HOME is unset AND the
+    defensive auto-derive can't find a project root (no .claude/settings.json
+    + bin/mh-mcp-server markers in any parent), invoke_subagent must raise
+    rather than spawn a blind agent with no MCP config.
+
+    The auto-derive layer was added so `mh-orchestrate run` (which historically
+    didn't export MH_HOME) works without the bash wrapper. The trust contract
+    still holds — when both env AND auto-derive fail, raise loudly.
+    """
     monkeypatch.delenv("MH_HOME", raising=False)
+    # Redirect the auto-derive walk to a tmp dir that lacks the project markers
+    # so the resolver falls all the way through to the raise.
+    monkeypatch.setattr(
+        "mh_orchestrator.claude_node.__file__", str(tmp_path / "fake.py"),
+    )
     from mh_orchestrator.claude_node import invoke_subagent
     with pytest.raises(RuntimeError, match="MH_HOME"):
         invoke_subagent(
