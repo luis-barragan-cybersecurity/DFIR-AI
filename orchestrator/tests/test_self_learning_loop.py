@@ -122,9 +122,9 @@ def test_verifier_complete_false_when_dissent_present_under_cap(tmp_path: Path,
     s = _state_with_findings(tmp_path, n=2)
     # Mock invoke_subagent to return one 'agree' and one 'Verdict: dissent'
     replies = iter([
-        MagicMock(final_text="Verdict: agree", exit_code=0),
+        MagicMock(final_text="Verdict: agree", exit_code=0, timed_out=False),
         MagicMock(final_text="## Verdict: **dissent**\n\nRe-run differed.",
-                  exit_code=0),
+                  exit_code=0, timed_out=False),
     ])
     with patch("mh_orchestrator.nodes.verifier_pass.invoke_subagent",
                side_effect=lambda **kw: next(replies)):

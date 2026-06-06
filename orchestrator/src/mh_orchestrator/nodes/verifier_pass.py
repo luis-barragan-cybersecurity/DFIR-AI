@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+import re
 from pathlib import Path
 from typing import Any
 
@@ -29,38 +29,126 @@ from ..state import IncidentState
 NODE_NAME = "verifier_pass"
 SUBAGENT = "Verifier"
 
+# Tools the Verifier subagent is allowed to invoke when independently
+# re-running each finding's cited tool. Mirrors triage.ALLOWED_TOOLS plus
+# read-only Windows artifact tools so the Verifier can validate any pin
+# the analyze node produced.
 ALLOWED_TOOLS = [
     "mcp__protocol_sift__hash",
-    "mcp__protocol_sift__finding_record",
+    "mcp__protocol_sift__os_detect",
+    "mcp__protocol_sift__magic_check",
+    "mcp__protocol_sift__memory_volatility",
+    "mcp__protocol_sift__win_registry_get",
+    "mcp__protocol_sift__win_evtx_query",
+    "mcp__protocol_sift__win_prefetch_parse",
+    "mcp__protocol_sift__win_lnk_parse",
+    "mcp__protocol_sift__mac_plist_get",
+    "mcp__protocol_sift__linux_history_parse",
     "Read", "Glob", "Grep",
 ]
 
 STUB_RATIONALE = "MH_NO_CLAUDE stub: skipped re-verification"
 
-# Markdown noise we strip before searching for the verdict token. Real
-# subagent replies use ## headers, ** bold, ` backticks, and inline code.
-import re as _re  # noqa: E402 — late import keeps top-of-file clean
-_MARKDOWN_NOISE = _re.compile(r"[*_`#>]+")
-# Verdict-extraction patterns, tried in order. Returning the FIRST match.
-# Order matters: explicit "Verdict: X" wins over a bare X anywhere in the
-# reply, which wins over a fallback word-boundary scan.
+# Verdicts the Verifier persona is contracted to emit (verifier.md §Verdict Schema).
+# Team added tool_failure + excerpt_mismatch alongside the original agree/dissent;
+# the markdown-fallback path additionally recognises "revise" for backward
+# compatibility with subagent personas that still emit prose-form verdicts.
+_VALID_VERDICTS = {"agree", "dissent", "tool_failure", "excerpt_mismatch"}
+_VALID_PROSE_VERDICTS = {"agree", "dissent", "revise"}
+# Verdicts that must route as dissent — the finding is suspect whether the
+# Verifier disagreed (`dissent`), couldn't re-run the tool (`tool_failure`),
+# or saw different bytes (`excerpt_mismatch`). Only `agree` survives as
+# verified. The raw verdict is preserved on the decision record so the
+# operator can see WHY.
+_DISSENT_LIKE = {"dissent", "tool_failure", "excerpt_mismatch", "revise"}
+
+# Find a ```json ... ``` fenced block (preferred — explicit verdict marker).
+_FENCED_JSON_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
+
+# Markdown noise we strip before searching for prose verdict tokens.
+_MARKDOWN_NOISE = re.compile(r"[*_`#>]+")
+# Verdict-extraction patterns for the prose-fallback path. Tried in order;
+# first match wins.
 _VERDICT_PATTERNS = (
-    _re.compile(r"verdict[:\s]+(agree|dissent|revise)", _re.IGNORECASE),
-    _re.compile(r"final\s+verdict[:\s]+(agree|dissent|revise)", _re.IGNORECASE),
-    _re.compile(r"\bdecision[:\s]+(agree|dissent|revise)", _re.IGNORECASE),
-    _re.compile(r"^(agree|dissent|revise)\b", _re.IGNORECASE | _re.MULTILINE),
+    re.compile(r"verdict[:\s]+(agree|dissent|revise)", re.IGNORECASE),
+    re.compile(r"final\s+verdict[:\s]+(agree|dissent|revise)", re.IGNORECASE),
+    re.compile(r"\bdecision[:\s]+(agree|dissent|revise)", re.IGNORECASE),
+    re.compile(r"^(agree|dissent|revise)\b", re.IGNORECASE | re.MULTILINE),
 )
 
 
+def _parse_verifier_verdict(raw: str) -> dict[str, Any] | None:
+    """Extract the JSON verdict object from a Verifier reply.
+
+    PRIMARY path — the verifier persona is instructed to emit a final
+    ```json``` fenced block containing ``verifier_decision`` plus
+    rationale/evidence. We return that whole object so the caller can
+    surface every field on the audit trail.
+
+    Strategy:
+      1. Prefer the LAST ```json fenced block (the persona is instructed to
+         emit the verdict as the final fenced block).
+      2. Fall back to the LAST naked JSON object in the text.
+      3. Accept only if the parsed object has a `verifier_decision` key
+         set to one of the contract enum values.
+
+    Returns None on any failure — caller falls back to `_extract_verdict`
+    (markdown-tolerant prose) to preserve the "no silent agree" trust
+    contract.
+    """
+    if not raw:
+        return None
+
+    candidates: list[str] = []
+    fenced = _FENCED_JSON_RE.findall(raw)
+    if fenced:
+        candidates.append(fenced[-1])
+
+    # Fallback: scan for naked JSON objects (largest balanced {...} blocks).
+    # Cheap heuristic: find every '{' and try to json.loads progressively
+    # to the matching '}'. Good enough for typical replies; we explicitly
+    # don't try to outsmart the persona contract.
+    for m in re.finditer(r"\{", raw):
+        depth = 0
+        for i in range(m.start(), len(raw)):
+            c = raw[i]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(raw[m.start():i + 1])
+                    break
+
+    # Try newest-first (fenced wins over inline; inner-most picked up by
+    # the scan above is acceptable too).
+    for cand in reversed(candidates):
+        try:
+            obj = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        verdict = obj.get("verifier_decision")
+        if isinstance(verdict, str) and verdict in _VALID_VERDICTS:
+            return obj
+    return None
+
+
 def _extract_verdict(raw: str) -> tuple[str, str]:
-    """Pull (verdict, parse_confidence) from a subagent reply.
+    """Markdown-tolerant prose verdict extractor — FALLBACK path used when
+    `_parse_verifier_verdict` finds no JSON block.
 
-    Returns one of ``"agree"`` / ``"dissent"`` / ``"revise"`` / ``"unparseable"``.
-    parse_confidence is "high" when an explicit "Verdict: X" pattern matched,
-    "medium" when a bare verdict token was found near the start, "low" on
-    fallback word-boundary scan, or "none" when no verdict signal was found.
+    Returns (verdict, parse_confidence). verdict is one of:
+      "agree" | "dissent" | "revise" | "unparseable".
 
-    The pre-fix matcher was strict-equality against the lowercased reply,
+    parse_confidence:
+      "high"   — explicit "Verdict: X" pattern matched
+      "medium" — bare verdict token found near the start
+      "low"    — fallback word-boundary scan
+      "none"   — no verdict signal at all
+
+    Pre-fix the matcher was strict-equality against the lowercased reply,
     so any markdown formatting ("## Verdict: **agree**") flipped to
     parse_error → dissent. On rocba this turned 12 real agrees into 12
     false dissents.
@@ -75,7 +163,7 @@ def _extract_verdict(raw: str) -> tuple[str, str]:
     # Fallback: first occurrence of any verdict word in the first 500 chars
     head = cleaned[:500].lower()
     for token in ("agree", "revise", "dissent"):
-        if _re.search(rf"\b{token}\b", head):
+        if re.search(rf"\b{token}\b", head):
             return token, "low"
     return "unparseable", "none"
 
@@ -95,7 +183,6 @@ def run(state: IncidentState) -> IncidentState:
     from . import emit_message, record_audit  # lazy to avoid circular
 
     out = Path(state["_output_dir"])
-    case_dir = out.parent
     findings = state.get("_findings", []) or []
 
     # Defensive init for states deserialized from older snapshots.
@@ -165,79 +252,125 @@ def run(state: IncidentState) -> IncidentState:
                           "decision": decision["decision"], "iter": idx},
                 )
             else:
-                try:
-                    result = invoke_subagent(
-                        subagent_name=SUBAGENT,
-                        prompt=prompt,
-                        case_dir=case_dir,
-                        allowed_tools=ALLOWED_TOOLS,
-                        mcp_config_path=None,
-                        headless=True,
-                        timeout_sec=int(os.environ.get("MH_VERIFIER_TIMEOUT_SEC", "600")),
-                    )
-                except subprocess.TimeoutExpired:
-                    # Verifier hang on one finding must not crash the whole
-                    # pipeline. Record a dissent (NOT silent agreement —
-                    # see Trust-contract fix #4) and continue with the next.
+                # Team's invoke_subagent no longer takes case_dir / mcp_config
+                # / timeout_sec — it resolves project root internally and uses
+                # MH_SUBAGENT_* env vars for the liveness monitor. Timeouts
+                # return result.timed_out=True (never raise).
+                result = invoke_subagent(
+                    subagent_name=SUBAGENT,
+                    prompt=prompt,
+                    allowed_tools=ALLOWED_TOOLS,
+                    headless=True,
+                )
+
+                if getattr(result, "timed_out", False):
                     decision = {
-                        "finding_id": fid, "decision": "dissent",
-                        "rationale": "[verifier subagent timeout]",
+                        "finding_id": fid,
+                        "decision": "dissent",
+                        "rationale": (
+                            f"[timeout] re-verification of {fid} hit a "
+                            f"{getattr(result, 'timeout_reason', 'unknown')} timeout before completing; "
+                            f"treated as dissent to preserve the trust contract."
+                        ),
                         "verifier_iter": pass_iter,
                         "finding_idx_in_pass": idx,
+                        "parse_error": False,
+                        "timed_out": True,
                     }
-                    state["_verifier_decisions"].append(decision)
-                    emit_message(
-                        state, from_agent=SUBAGENT, to_agent="orchestrator",
-                        role="tool_failure", content="[verifier timeout]",
-                        metadata={"finding_id": fid, "verifier_iter": idx,
-                                  "error": "TimeoutExpired"},
-                    )
                     record_audit(
                         state, event="verifier_pass_timeout",
                         data={"subagent": SUBAGENT, "finding_id": fid,
-                              "decision": "dissent", "iter": idx,
-                              "note": "subagent did not return — recorded as dissent, NOT silent agree"},
+                              "reason": getattr(result, 'timeout_reason', 'unknown'),
+                              "iter": idx},
+                    )
+                    state["_verifier_decisions"].append(decision)
+                    emit_message(
+                        state, from_agent=SUBAGENT, to_agent="orchestrator",
+                        role="tool_failure",
+                        content=f"verifier decision: dissent for {fid} (timeout)",
+                        metadata={"verifier_decision": "dissent", "finding_id": fid,
+                                  "verifier_iter": pass_iter, "timed_out": True,
+                                  "rationale": decision["rationale"]},
                     )
                     continue
-                # Trust-contract fix (#4): NEVER silently default to "agree".
-                # But ALSO never default to "dissent" on a parseable reply
-                # just because it's markdown-formatted. Pre-fix the matcher
-                # was strict-equality against {agree,dissent,revise} which
-                # meant every "## Verdict: **agree**" reply got recorded as
-                # parse_error → dissent. On rocba-memory that turned 12 real
-                # agrees into 12 fake dissents, and the dashboard showed
-                # "20/20 dissent" for what was actually a 60%-pass run.
-                #
-                # New behavior: extract verdict via `_extract_verdict` which
-                # is markdown-tolerant. Only fall back to "unparseable" when
-                # the reply truly carries no verdict signal — and that case
-                # routes back to analyze (not silent-agree).
+
+                # Trust-contract fix (#4 / B2): try the persona's CONTRACTED
+                # JSON verdict block FIRST. If absent, fall back to the
+                # markdown-tolerant prose extractor. NEITHER side falls back
+                # to silent-agree — that defeats the whole point of the
+                # Verifier. The rocba run showed both shapes appearing in
+                # the wild (some subagents emit JSON cleanly, others wrap
+                # the verdict in ## Verdict: **X**), so both paths must
+                # work.
                 raw = (result.final_text or "").strip()
-                verdict, parse_confidence = _extract_verdict(raw)
-                rationale = raw if verdict in {"agree", "dissent", "revise"} else (
-                    f"[unparseable_verdict] no verdict token found in subagent "
-                    f"reply; raw='{raw[:200]}'; routed back to analyze"
-                )
-                decision = {
-                    "finding_id": fid,
-                    "decision": verdict,
-                    "rationale": rationale,
-                    "verifier_iter": pass_iter,  # per-iteration, not per-finding
-                    "finding_idx_in_pass": idx,  # keep loop counter for debug
-                    "parse_confidence": parse_confidence,
-                }
-                record_audit(
-                    state,
-                    event=(
-                        "verifier_pass_unparseable" if verdict == "unparseable"
-                        else "verifier_pass_complete"
-                    ),
-                    data={"subagent": SUBAGENT, "finding_id": fid,
-                          "decision": verdict, "iter": idx,
-                          "parse_confidence": parse_confidence,
-                          "exit_code": result.exit_code,
-                          "raw_reply": raw[:200]},
-                )
+                verdict_obj = _parse_verifier_verdict(raw)
+
+                if verdict_obj is not None:
+                    raw_decision = verdict_obj["verifier_decision"]
+                    routing_decision = (
+                        "agree" if raw_decision == "agree" else "dissent"
+                    )
+                    decision = {
+                        "finding_id": fid,
+                        "decision": routing_decision,
+                        "verifier_decision_raw": raw_decision,
+                        "verifier_confidence": verdict_obj.get("verifier_confidence"),
+                        "pins_reverified": verdict_obj.get("pins_reverified"),
+                        "pins_failed": verdict_obj.get("pins_failed"),
+                        "delta": verdict_obj.get("delta", ""),
+                        "recommendation": verdict_obj.get("recommendation"),
+                        "rationale": verdict_obj.get("delta") or raw_decision,
+                        "verifier_iter": pass_iter,
+                        "finding_idx_in_pass": idx,
+                        "parse_error": False,
+                        "parse_confidence": "high",
+                    }
+                    record_audit(
+                        state, event="verifier_pass_complete",
+                        data={"subagent": SUBAGENT, "finding_id": fid,
+                              "decision": routing_decision,
+                              "verifier_decision_raw": raw_decision,
+                              "iter": idx, "exit_code": result.exit_code},
+                    )
+                else:
+                    # Markdown-tolerant prose fallback. Pre-fix this path
+                    # turned every "## Verdict: **agree**" into a false
+                    # dissent (12 of 20 on rocba). The extractor recognises
+                    # markdown wrapping; only truly unparseable replies
+                    # become routed as dissent.
+                    verdict, parse_confidence = _extract_verdict(raw)
+                    rationale = raw if verdict in {"agree", "dissent", "revise"} else (
+                        f"[unparseable_verdict] no JSON verdict block AND no "
+                        f"prose verdict signal found; raw='{raw[:200]}'; "
+                        f"routed back to analyze"
+                    )
+                    routing_decision = (
+                        "agree" if verdict == "agree" else "dissent"
+                    )
+                    decision = {
+                        "finding_id": fid,
+                        "decision": routing_decision,
+                        "verifier_decision_raw": verdict,
+                        "rationale": rationale,
+                        "verifier_iter": pass_iter,
+                        "finding_idx_in_pass": idx,
+                        "parse_confidence": parse_confidence,
+                        "parse_error": verdict == "unparseable",
+                    }
+                    record_audit(
+                        state,
+                        event=(
+                            "verifier_pass_unparseable" if verdict == "unparseable"
+                            else "verifier_pass_complete"
+                        ),
+                        data={"subagent": SUBAGENT, "finding_id": fid,
+                              "decision": routing_decision,
+                              "verifier_decision_raw": verdict,
+                              "iter": idx,
+                              "parse_confidence": parse_confidence,
+                              "exit_code": result.exit_code,
+                              "raw_reply": raw[:200]},
+                    )
 
             state["_verifier_decisions"].append(decision)
 

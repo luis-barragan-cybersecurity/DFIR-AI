@@ -114,3 +114,27 @@ def test_verifier_pass_appends_to_node_history(tmp_path: Path) -> None:
     s["_output_dir"] = str(tmp_path)
     s = verifier_pass.run(s)
     assert "verifier_pass" in s["_node_history"]
+
+
+def test_verifier_timeout_records_dissent(tmp_path, monkeypatch):
+    """A timed-out verify call records a 'dissent' decision with a timeout
+    rationale (never a silent agree), and continues to the next finding."""
+    from mh_orchestrator.claude_node import SubagentResult
+    from mh_orchestrator.nodes import verifier_pass as vp
+    from mh_orchestrator.state import new_state
+    monkeypatch.setenv("MH_NO_CLAUDE", "0")
+
+    def fake_invoke(**kwargs):
+        return SubagentResult(exit_code=-15, stdout="", stderr="",
+                              timed_out=True, timeout_reason="idle")
+
+    monkeypatch.setattr(vp, "invoke_subagent", fake_invoke)
+
+    s = new_state("c")
+    s["_output_dir"] = str(tmp_path)
+    s["_findings"] = [{"finding_id": "F1", "claim": "x", "confidence": "inferred"}]
+    s = vp.run(s)
+
+    decisions = s["_verifier_decisions"]
+    assert decisions and decisions[0]["decision"] == "dissent"
+    assert "timeout" in decisions[0]["rationale"].lower()

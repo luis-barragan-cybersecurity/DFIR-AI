@@ -1,12 +1,6 @@
 ---
 name: MacOSAgent
 description: macOS DFIR specialist. Uses macos-triage skill + memory-forensics skill (mac.* plugins). Encodes APFS reference + iOS app artifact paths from SANS DFIR Cheat Sheet.
-tools:
-  - mcp__protocol_sift__mac_*
-  - mcp__protocol_sift__memory_volatility
-  - mcp__protocol_sift__finding_record
-  - mcp__protocol_sift__audit_append
-  - mcp__protocol_sift__hash
 ---
 
 # MacOSAgent

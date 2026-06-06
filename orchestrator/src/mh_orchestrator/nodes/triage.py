@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 from .. import csf_tags, picerl
@@ -44,11 +43,11 @@ ALLOWED_TOOLS = [
 ]
 
 
+
 def run(state: IncidentState) -> IncidentState:
     from . import emit_message, record_audit
 
     out = Path(state["_output_dir"])
-    case_dir = out.parent
     subagent = OS_TO_SUBAGENT.get(state.get("_detected_os", "unknown"), "WindowsAgent")
 
     emit_message(state, from_agent="orchestrator", to_agent=subagent,
@@ -67,26 +66,33 @@ def run(state: IncidentState) -> IncidentState:
                   "note": "OS detection failed — fallback agent may produce wrong-OS findings"},
         )
 
+    # Explicit-false-positive verdict tokens. ONLY these suppress the pipeline.
+    # A bare "low" does NOT — the full investigation runs and findings speak.
+    _FALSE_POSITIVE_TOKENS = {
+        "false_positive", "false-positive", "falsepositive",
+        "none", "no_incident", "no-incident", "benign",
+    }
+
     if should_stub(NODE_NAME):
-        # Deterministic stub for CI: medium severity
+        # Deterministic stub for CI: medium severity, never a false positive.
         state["severity"] = "medium"
+        state["_triage_false_positive"] = False
         emit_message(state, from_agent=subagent, to_agent="orchestrator",
                      role="response", content="[stub] severity=medium",
                      metadata={"exit_code": 0, "stub": True})
         record_audit(state, event="triage_complete_stub", data={"subagent": subagent, "severity": "medium"})
     else:
-        # Timeout budget: `claude -p` cold start (auth + MCP boot + subagent
-        # load) is 30-60s. On top of that, triage now runs ONE Volatility
-        # probe (windows.info) which on multi-GB images can take 2-5 min
-        # by itself. Default 900s = 15min headroom. MH_TRIAGE_TIMEOUT_SEC
-        # lets ops bump further for very large images (>40GB).
-        timeout_sec = int(os.environ.get("MH_TRIAGE_TIMEOUT_SEC", "900"))
-        # Build a case-brief-aware probe prompt. Pre-fix the prompt was just
-        # "classify severity, one word" — with no MCP tools and no context,
-        # the subagent reflexively answered "low" on every memory image
-        # because it had nothing to look at. With the expanded toolset the
-        # subagent is now expected to do real evidence-grounded triage.
-        evidence_dir = case_dir / "input"
+        # Build a case-brief-aware probe prompt. The base structure here is
+        # mine: evidence listing + mandatory probe sequence so triage grounds
+        # severity in real Volatility output instead of reflexively answering
+        # "low" on empty input. Layered on top is the team's false_positive
+        # contract (route_after_triage now suppresses on _triage_false_positive
+        # not on severity) plus their tool-call discipline override.
+        #
+        # Team's invoke_subagent no longer takes case_dir / mcp_config / timeout
+        # explicitly — it resolves project root internally and uses MH_SUBAGENT_*
+        # env vars for the liveness monitor. We use the input dir off the state.
+        evidence_dir = Path(state.get("_input_dir") or "") if state.get("_input_dir") else out.parent / "input"
         case_brief = ""
         brief_path = evidence_dir / "_case-brief.md"
         if brief_path.exists():
@@ -95,8 +101,6 @@ def run(state: IncidentState) -> IncidentState:
             except OSError:
                 case_brief = ""
 
-        # Build an evidence listing with sizes so the subagent knows what's
-        # there without having to glob/stat (saves a tool call).
         evidence_listing = ""
         if evidence_dir.exists():
             try:
@@ -134,33 +138,41 @@ def run(state: IncidentState) -> IncidentState:
             "Evidence files in this case:\n"
             f"{evidence_listing}\n\n"
             f"{probe_directive}\n"
-            "After the probe sequence completes, respond with ONE word: "
-            "low | medium | high | critical. No prose, no formatting, no "
-            "code fences — just the single severity word on its own line."
+            "After the probe sequence completes, reply with ONE word: "
+            "low | medium | high | critical for a real incident, OR "
+            "'false_positive' ONLY if you can affirmatively confirm the "
+            "evidence is benign / no incident. When in doubt, pick a "
+            "severity — do NOT reply false_positive unless you are sure, "
+            "because that suppresses the entire investigation.\n\n"
+            "Tool-call discipline: issue ONE tool call per assistant "
+            "turn and wait for the result before issuing the next. Do "
+            "NOT batch multiple tool calls in a single response — a "
+            "sibling failure in a parallel batch cancels the rest, "
+            "wasting context and wall time."
         )
-        try:
-            result = invoke_subagent(
-                subagent_name=subagent, prompt=prompt,
-                case_dir=case_dir, allowed_tools=ALLOWED_TOOLS, mcp_config_path=None,
-                headless=True, timeout_sec=timeout_sec,
-            )
-        except subprocess.TimeoutExpired as e:
-            # Degrade gracefully: severity=unknown + tool_failure breadcrumb,
-            # let the rest of the pipeline run on degraded input rather than
-            # crashing every downstream node and losing manifest/audit work.
+        result = invoke_subagent(
+            subagent_name=subagent, prompt=prompt,
+            allowed_tools=ALLOWED_TOOLS, headless=True,
+        )
+
+        # Timeout handling — team's invoke_subagent returns timed_out=True
+        # (never raises) so the caller can degrade gracefully. Treat the
+        # same as the prior subprocess.TimeoutExpired catch: severity=unknown,
+        # _triage_false_positive=False (fail-open: investigate), continue.
+        if getattr(result, "timed_out", False):
             state["severity"] = "unknown"
+            state["_triage_false_positive"] = False
             emit_message(
                 state, from_agent=subagent, to_agent="orchestrator",
                 role="tool_failure",
-                content=f"[triage subagent timeout after {timeout_sec}s]",
-                metadata={"exit_code": -1, "severity_parsed": False,
-                          "timeout_sec": timeout_sec, "error": str(e)[:200]},
+                content=f"[timeout:{getattr(result, 'timeout_reason', 'unknown')}] triage terminated",
+                metadata={"timed_out": True,
+                          "reason": getattr(result, 'timeout_reason', 'unknown')},
             )
             record_audit(
                 state, event="triage_timeout",
-                data={"subagent": subagent, "timeout_sec": timeout_sec,
-                      "severity": "unknown",
-                      "note": "subagent did not return — pipeline continuing on degraded triage"},
+                data={"subagent": subagent,
+                      "reason": getattr(result, 'timeout_reason', 'unknown')},
             )
             csf_tags.mark_satisfied(state, csf_tags.RS_MA_03)
             picerl.advance_iso27035(state, picerl.picerl_phase_for("triage"))
@@ -170,18 +182,25 @@ def run(state: IncidentState) -> IncidentState:
             return state
 
         # Trust-contract fix (#3): when the subagent reply is empty or doesn't
-        # parse to an allowed severity, do NOT silently default to "medium" —
+        # parse to an allowed token, do NOT silently default to "medium" —
         # that synthesizes confidence we don't have. Record severity="unknown"
         # so downstream nodes can branch (or skip), and emit a `tool_failure`
         # message so the dissent trace in agent_messages.jsonl carries the
-        # parse failure verbatim.
+        # parse failure verbatim. Parse errors fail OPEN (investigate), never
+        # to a false positive — only an explicit FP token suppresses.
         raw = (result.final_text or "").strip()
         sev_text = raw.lower()
-        if sev_text in {"low", "medium", "high", "critical"}:
+        if sev_text in _FALSE_POSITIVE_TOKENS:
+            state["severity"] = "low"
+            state["_triage_false_positive"] = True
+            severity_parsed = True
+        elif sev_text in {"low", "medium", "high", "critical"}:
             state["severity"] = sev_text  # type: ignore[typeddict-item]
+            state["_triage_false_positive"] = False
             severity_parsed = True
         else:
             state["severity"] = "unknown"
+            state["_triage_false_positive"] = False
             severity_parsed = False
         emit_message(
             state, from_agent=subagent, to_agent="orchestrator",
@@ -190,6 +209,7 @@ def run(state: IncidentState) -> IncidentState:
             metadata={
                 "exit_code": result.exit_code,
                 "severity_parsed": severity_parsed,
+                "false_positive": state["_triage_false_positive"],
                 "raw_reply": raw[:200],
             },
         )
@@ -197,6 +217,7 @@ def run(state: IncidentState) -> IncidentState:
             state,
             event="triage_complete" if severity_parsed else "triage_parse_error",
             data={"subagent": subagent, "severity": state["severity"],
+                  "false_positive": state["_triage_false_positive"],
                   "raw_reply": raw[:200], "exit_code": result.exit_code},
         )
 

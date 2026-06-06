@@ -27,30 +27,37 @@ def make_state(**overrides: Any) -> IncidentState:
 
 
 # --- route_after_triage ---------------------------------------------------
+#
+# Contract (revised): suppress ONLY on an EXPLICIT false-positive verdict from
+# triage (_triage_false_positive=True). A bare low/informational severity must
+# NOT suppress — the full investigation runs and the findings speak. This fixes
+# the cascade where one weak one-word "low" killed the whole pipeline before
+# analyze ran (the `not findings` clause was always true at triage time).
 
-def test_route_after_triage_low_no_findings_suppresses() -> None:
-    s = make_state(severity="low", _findings=[])
+def test_route_after_triage_explicit_false_positive_suppresses() -> None:
+    s = make_state(severity="low", _triage_false_positive=True)
     assert route_after_triage(s) == "suppress"
 
 
-def test_route_after_triage_informational_no_findings_suppresses() -> None:
-    s = make_state(severity="informational", _findings=[])
-    assert route_after_triage(s) == "suppress"
+def test_route_after_triage_low_without_false_positive_declares() -> None:
+    s = make_state(severity="low", _triage_false_positive=False, _findings=[])
+    assert route_after_triage(s) == "declare_incident"
 
 
-def test_route_after_triage_low_with_findings_declares() -> None:
-    s = make_state(severity="low", _findings=[{"id": "f1"}])
+def test_route_after_triage_informational_without_false_positive_declares() -> None:
+    s = make_state(severity="informational", _triage_false_positive=False, _findings=[])
     assert route_after_triage(s) == "declare_incident"
 
 
 def test_route_after_triage_high_declares() -> None:
-    s = make_state(severity="high", _findings=[])
+    s = make_state(severity="high")
     assert route_after_triage(s) == "declare_incident"
 
 
-def test_route_after_triage_missing_severity_declares() -> None:
+def test_route_after_triage_default_state_declares() -> None:
+    """A fresh state has no explicit false-positive flag → declare (fail-open:
+    investigate rather than silently drop)."""
     s = new_state("test-incident")
-    s.pop("severity", None)  # type: ignore[misc]
     assert route_after_triage(s) == "declare_incident"
 
 

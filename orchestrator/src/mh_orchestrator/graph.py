@@ -43,32 +43,35 @@ from .state import IncidentState
 # via build_graph(recursion_limit=N) or env MH_LG_RECURSION_LIMIT.
 DEFAULT_RECURSION_LIMIT = 50
 
-# Severity values that indicate "no real incident" when no findings surfaced.
-# Triage emits a `_findings` list; an empty list combined with low/informational
-# severity is the false-positive path → suppress.
-_SUPPRESS_SEVERITIES = {"informational", "low"}
-
 # RCA loop cap (§11.3 row 2). After N analyze iterations we force progress
 # to attack_tag even if `_rca_complete` is still False — analyze itself is
 # responsible for emitting an audit warning when the cap is hit. Default
 # bumped 3 → 5 because real-image (rocba 17.7GB) cases routinely tripped
 # the prior cap before surveying all plugin outputs. Env-configurable so
 # ops can scale per case.
+#
+# Note: _SUPPRESS_SEVERITIES (severity-based suppression) was removed in
+# the team's refactor — route_after_triage now suppresses only on an
+# explicit `_triage_false_positive=True` flag, not on bare low severity.
 _ANALYZE_ITER_CAP = int(os.environ.get("MH_ANALYZE_MAX_ITER", "5"))
 
 
 def route_after_triage(state: IncidentState) -> str:
-    """Severity gate per §11.3 row 1 (RS.MA-03).
+    """False-positive gate per §11.3 row 1 (RS.MA-03).
+
+    Suppress ONLY when triage's specialist EXPLICITLY declared the alert a
+    false positive (`_triage_false_positive=True`). A bare low/informational
+    severity does NOT suppress: the full investigation runs and the findings
+    speak (mirrors interactive mode). This fixes the cascade where a single
+    weak one-word "low" killed the whole pipeline before analyze ran — the old
+    `severity in {low,informational} and not findings` test always tripped
+    because triage never populates `_findings` (analyze does, later).
 
     Returns:
-        "suppress"          — false-positive path (low/informational severity
-                              AND no findings surfaced).
-        "declare_incident"  — otherwise (default fail-open: declare on
-                              missing/unknown severity to avoid silent drops).
+        "suppress"          — triage affirmatively flagged a false positive.
+        "declare_incident"  — otherwise (default fail-open: investigate).
     """
-    severity = state.get("severity")
-    findings = state.get("_findings", [])
-    if severity in _SUPPRESS_SEVERITIES and not findings:
+    if state.get("_triage_false_positive") is True:
         return "suppress"
     return "declare_incident"
 

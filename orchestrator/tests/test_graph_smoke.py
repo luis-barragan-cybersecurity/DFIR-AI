@@ -101,29 +101,30 @@ def test_graph_walks_full_ir_topology(tmp_path, monkeypatch):
     assert not missing, f"missing audit events: {missing}"
 
 
-def test_graph_suppresses_low_severity_no_findings(tmp_path, monkeypatch):
-    """Severity gate (§11.3 row 1): when triage yields low+no findings, the
-    graph short-circuits to suppress → session_finalize and skips the rest of
-    the IR pipeline. This validates the route_after_triage conditional edge
-    is wired into the compiled graph (not just unit-tested as a pure func).
-    """
+def test_graph_suppresses_only_on_explicit_false_positive(tmp_path, monkeypatch):
+    """False-positive gate (§11.3 row 1, revised): the graph short-circuits to
+    suppress → session_finalize ONLY when triage affirmatively flags a false
+    positive (_triage_false_positive=True). This validates the route_after_triage
+    conditional edge is wired into the compiled graph (not just unit-tested as a
+    pure func). A bare 'low' severity does NOT suppress (see the happy-path and
+    low-severity-still-investigates tests)."""
     monkeypatch.setenv("MH_NO_CLAUDE", "1")
-    # Make triage stub emit "low" + force _findings=[] post-triage.
-    # Simplest deterministic path: monkeypatch triage.run to set severity=low.
+    # Make triage explicitly flag a false positive (what a specialist returns
+    # when it confirms the alert is benign).
     from mh_orchestrator.nodes import triage as triage_mod
 
     original_run = triage_mod.run
 
-    def low_severity_run(state):
+    def false_positive_run(state):
         s = original_run(state)
         s["severity"] = "low"
-        s["_findings"] = []
+        s["_triage_false_positive"] = True
         return s
 
-    monkeypatch.setattr(triage_mod, "run", low_severity_run)
+    monkeypatch.setattr(triage_mod, "run", false_positive_run)
     # Re-bind NODES entry too — registry holds a direct reference.
     from mh_orchestrator.nodes import NODES
-    monkeypatch.setitem(NODES, "triage", low_severity_run)
+    monkeypatch.setitem(NODES, "triage", false_positive_run)
 
     from mh_orchestrator.graph import build_graph
     from mh_orchestrator.state import new_state
@@ -140,6 +141,37 @@ def test_graph_suppresses_low_severity_no_findings(tmp_path, monkeypatch):
     assert final["phase"] == "lessons"
     # No verifier ran on the suppressed branch
     assert final["_verifier_complete"] is False
+
+
+def test_graph_low_severity_still_runs_full_pipeline(tmp_path, monkeypatch):
+    """Regression guard for the cascade bug: a low-severity triage verdict WITH
+    NO explicit false-positive flag must run the FULL pipeline, not suppress.
+    Previously low+no-findings short-circuited the whole investigation."""
+    monkeypatch.setenv("MH_NO_CLAUDE", "1")
+    from mh_orchestrator.nodes import triage as triage_mod
+
+    original_run = triage_mod.run
+
+    def low_but_real_run(state):
+        s = original_run(state)
+        s["severity"] = "low"
+        s["_triage_false_positive"] = False
+        return s
+
+    monkeypatch.setattr(triage_mod, "run", low_but_real_run)
+    from mh_orchestrator.nodes import NODES
+    monkeypatch.setitem(NODES, "triage", low_but_real_run)
+
+    from mh_orchestrator.graph import build_graph
+    from mh_orchestrator.state import new_state
+
+    s = new_state("case-low-real")
+    s["_output_dir"] = str(tmp_path)
+    final = build_graph(recursion_limit=50).invoke(s)
+
+    assert final["_node_history"] == EXPECTED_ORDER, "low severity must not suppress"
+    assert final["_verifier_complete"] is True
+    assert "suppress" not in final["_node_history"]
 
 
 def test_recursion_limit_fires(tmp_path, monkeypatch):

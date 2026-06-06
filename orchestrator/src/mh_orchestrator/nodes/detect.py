@@ -79,6 +79,11 @@ def _detect_os_from_evidence(evidence_path: str) -> str:
     names = " ".join(f.name.lower() for f in files)
     if any(m in names for m in ("ntuser.dat", ".evtx", "prefetch", ".pf")):
         return "windows"
+    # Raw NTFS metadata files (disk-image triage, e.g. a $MFT-only collection).
+    # NTFS is Windows-only, so these are an unambiguous Windows signal. Without
+    # them a $MFT-only case returned 'unknown' → wrong-agent fallback.
+    if any(m in names for m in ("$mft", "$logfile", "$usnjrnl", "$boot", "$secure", "$extend")):
+        return "windows"
     if any(m in names for m in (".plist", "knowledgec.db", "tracev3")):
         return "macos"
     if any(m in names for m in ("auth.log", "syslog", ".bash_history")):
