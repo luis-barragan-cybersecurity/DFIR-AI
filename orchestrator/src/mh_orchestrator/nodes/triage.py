@@ -143,12 +143,17 @@ def run(state: IncidentState) -> IncidentState:
             "'false_positive' ONLY if you can affirmatively confirm the "
             "evidence is benign / no incident. When in doubt, pick a "
             "severity — do NOT reply false_positive unless you are sure, "
-            "because that suppresses the entire investigation.\n\n"
-            "Tool-call discipline: issue ONE tool call per assistant "
-            "turn and wait for the result before issuing the next. Do "
-            "NOT batch multiple tool calls in a single response — a "
-            "sibling failure in a parallel batch cancels the rest, "
-            "wasting context and wall time."
+            "because that suppresses the entire investigation."
+            # NOTE: the Phase-1 "issue ONE tool call per turn, do NOT batch"
+            # directive was deliberately REMOVED here. Its only error-prone
+            # cascade trigger (Bash) is now subtracted at spawn via
+            # providers.anthropic_cli.DISALLOWED_TOOLS, so the remaining toolset
+            # (mcp__protocol_sift__*, Read, Glob, Grep) is reliable and
+            # parallelizing it never cascades. Forbidding parallelism was
+            # pure wall-time cost; removing it restores the harness default
+            # (safe MCP/Read parallelism) by subtraction. Re-add only if a
+            # real `Cancelled: parallel tool call mcp__protocol_sift__*`
+            # event is ever observed.
         )
         result = invoke_subagent(
             subagent_name=subagent, prompt=prompt,

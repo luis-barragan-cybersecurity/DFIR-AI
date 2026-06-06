@@ -240,21 +240,18 @@ def _build_analyze_prompt(state: IncidentState, case_dir: Path, iter_num: int) -
         "memory_volatility for memory dumps, mcp__protocol_sift__linux_"
         "history_parse for shell history, mcp__protocol_sift__win_* for "
         "Windows artifacts).\n\n"
-        # Tool-call discipline override. Claude Code's product system prompt
-        # instructs the agent to 'Maximize parallel tool calls'. The harness
-        # uses fail-fast scheduling: when one sibling in a parallel batch
-        # errors, the rest are cancelled. For analyze the cost is much
-        # higher than triage — Volatility plugins are minutes each, not
-        # milliseconds, so a parallel-batch cancel loses real wall time on
-        # the 7200s iteration ceiling. The user-supplied prompt is
-        # concatenated AFTER the product system prompt, so this explicit
-        # directive overrides it. See
-        # ~/handoffs/parallel-tool-call-cancellations-FINDINGS-2026-05-30.md.
-        "**Tool-call discipline.** Issue ONE tool call per assistant turn "
-        "and wait for the result before issuing the next. Do NOT batch "
-        "multiple tool calls in a single response. A sibling failure in a "
-        "parallel batch cancels the rest, costing wall time on Volatility / "
-        "MCP calls and corrupting the finding-record cadence.\n\n"
+        # NOTE: the Phase-1 "issue ONE tool call per turn, do NOT batch"
+        # directive was deliberately REMOVED here. Its only error-prone
+        # cascade trigger (Bash) is now subtracted at spawn via
+        # providers.anthropic_cli.DISALLOWED_TOOLS, so the remaining toolset
+        # (mcp__protocol_sift__*, Read, Glob, Grep) is reliable and
+        # parallelizing it never cascades. Forbidding parallelism was pure
+        # wall-time cost on the 7200s analyze ceiling; removing it restores
+        # safe MCP/Read parallelism by subtraction. The record-as-you-go
+        # "Recording discipline" below is a SEPARATE directive and stays — it
+        # is the defense-in-depth that makes the residual MCP-parallel-cascade
+        # risk acceptable. Re-add the tool-call directive only if a real
+        # `Cancelled: parallel tool call mcp__protocol_sift__*` is observed.
         "**Recording discipline (READ — failure-mode prevention).** Call "
         "mcp__protocol_sift__finding_record IMMEDIATELY as each observation "
         "lands. Do NOT batch findings for an end-of-investigation reply. "

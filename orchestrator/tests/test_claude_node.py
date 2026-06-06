@@ -114,6 +114,62 @@ def test_invoke_subagent_defaults_to_whole_server_allowlist(capturing_claude, tm
     assert "mcp__protocol_sift" in argv, "default allowlist must grant the whole protocol_sift server"
 
 
+def test_invoke_subagent_disallows_bash(capturing_claude, tmp_path, monkeypatch):
+    """Forensic specialists are read-only and reach evidence only through the
+    sandboxed protocol_sift MCP tools (+ Read/Glob/Grep). The headless `claude -p`
+    --allowedTools flag is ADDITIVE — it does NOT remove Bash from the spawned
+    default toolset (confirmed against the system/init event) — so the only way to
+    actually withhold Bash is the SUBTRACTIVE --disallowedTools flag. Without it a
+    specialist holds Bash, which (a) lets it escape the evidence sandbox
+    (chain-of-custody breach) and (b) is the error-prone tool that triggers the
+    harness parallel-tool-call cancellation cascade. (Edit/Write/WebSearch
+    hardening is a deliberate follow-up — Write is intentionally on the allowlist.)"""
+    capture, _, _ = capturing_claude
+    project = tmp_path / "proj"
+    (project / "bin").mkdir(parents=True)
+    monkeypatch.setenv("MH_HOME", str(project))
+
+    from mh_orchestrator.claude_node import invoke_subagent
+    invoke_subagent(subagent_name="WindowsAgent", prompt="go", headless=True)
+
+    argv = capture.read_text()
+    assert "--disallowedTools" in argv, (
+        "spawn must SUBTRACT Bash — --allowedTools is additive, not restrictive"
+    )
+    disallowed_token = argv.split("--disallowedTools", 1)[1].split()[0]
+    denied = set(disallowed_token.split(","))
+    assert "Bash" in denied, (
+        f"read-only specialist must deny Bash (cascade trigger + sandbox-escape vector); got {denied}"
+    )
+
+
+def test_invoke_subagent_passes_strict_mcp_config(capturing_claude, tmp_path, monkeypatch):
+    """--mcp-config is ADDITIVE: without --strict-mcp-config the spawn inherits
+    every user-scope MCP server (e.g. claude.ai Drive/Calendar/Notion connectors)
+    on top of the injected protocol_sift config — confirmed against the
+    system/init event of real subagent traces. That leak is (a) a latent hang:
+    in headless -p mode a call to a connector tool outside --allowedTools hangs
+    until the idle-timeout kill, (b) a chain-of-custody wart: a forensic
+    specialist holding live Drive/Notion/Calendar connections, and (c) context
+    noise (connector server instructions + eagerly-loaded auth tools).
+    --strict-mcp-config restricts the spawn to exactly the servers in
+    --mcp-config."""
+    capture, _, _ = capturing_claude
+    project = tmp_path / "proj"
+    (project / "bin").mkdir(parents=True)
+    monkeypatch.setenv("MH_HOME", str(project))
+
+    from mh_orchestrator.claude_node import invoke_subagent
+    invoke_subagent(subagent_name="WindowsAgent", prompt="go", headless=True)
+
+    argv = capture.read_text()
+    assert "--strict-mcp-config" in argv, (
+        "spawn must pass --strict-mcp-config — --mcp-config alone is additive, "
+        "so user-scope MCP servers (claude.ai connectors) leak into the "
+        "forensic subagent session"
+    )
+
+
 def test_invoke_subagent_loads_named_agent_persona(capturing_claude, tmp_path, monkeypatch):
     """The OS-specialist playbook must actually load: pass --agent <name> so
     the .claude/agents/<name>.md persona runs, and drop the dead

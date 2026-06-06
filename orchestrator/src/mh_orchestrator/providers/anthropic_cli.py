@@ -46,13 +46,24 @@ def _looks_like_billing(text: str) -> bool:
 
 # Default tool allowlist. `mcp__protocol_sift` (bare server name) is the
 # canonical Claude Code form for "allow EVERY tool from this MCP server" —
-# drift-proof as the server grows. Bash is intentionally omitted — the
-# specialists are read-only and reach evidence only through sandboxed MCP
-# tools.
+# drift-proof as the server grows. Bash is omitted here — but note that
+# `--allowedTools` is ADDITIVE, so omission alone does NOT withhold Bash; see
+# DISALLOWED_TOOLS below for the flag that actually does.
 DEFAULT_ALLOWED_TOOLS: list[str] = [
     "mcp__protocol_sift",
     "Read", "Glob", "Grep", "Write", "TodoWrite", "Skill",
 ]
+
+# Tools SUBTRACTED from every subagent at spawn. `--allowedTools` is ADDITIVE —
+# listing only MCP/Read/Glob/Grep above does NOT remove Bash from the inherited
+# default toolset (confirmed against the system/init event). `--disallowedTools`
+# is the one flag that actually withholds a tool. Bash is denied because it is the
+# single error-prone tool that triggers the harness parallel-tool-call
+# cancellation cascade, AND because it lets a "read-only" specialist escape the
+# evidence sandbox (cd out of /input, read non-evidence files) outside the MCP
+# audit trail — a chain-of-custody breach. Edit/Write/WebSearch hardening is a
+# deliberate follow-up (Write is intentionally on the allowlist above).
+DISALLOWED_TOOLS: list[str] = ["Bash"]
 
 
 def _resolve_project_dir() -> Path:
@@ -352,9 +363,23 @@ class AnthropicCliProvider(Provider):
             argv: list[str] = ["claude"]
             if headless:
                 argv += ["-p", "--output-format", "stream-json", "--verbose"]
-            argv += ["--agent", subagent_name, "--mcp-config", str(mcp_cfg)]
+            # --strict-mcp-config: --mcp-config alone is ADDITIVE, so the spawn
+            # would also inherit every user-scope MCP server (claude.ai
+            # Drive/Calendar/Notion connectors — seen in real trace init events).
+            # That leak is a latent hang (a connector tool call outside
+            # --allowedTools hangs headless until the idle-timeout kill), a
+            # chain-of-custody wart (forensic specialist holding live external
+            # connections), and context noise. Restrict to exactly our config.
+            argv += [
+                "--agent", subagent_name,
+                "--mcp-config", str(mcp_cfg),
+                "--strict-mcp-config",
+            ]
             if tools:
                 argv += ["--allowedTools", ",".join(tools)]
+            # SUBTRACTIVE deny — the additive --allowedTools above cannot withhold
+            # Bash; this is what actually keeps it out of the spawned toolset.
+            argv += ["--disallowedTools", ",".join(DISALLOWED_TOOLS)]
             env = {**os.environ, "CLAUDE_PROJECT_DIR": str(project_dir)}
             rc, stdout, stderr, timed_out, reason = _run_with_liveness_monitor(
                 argv, prompt=prompt, cwd=str(project_dir), env=env,

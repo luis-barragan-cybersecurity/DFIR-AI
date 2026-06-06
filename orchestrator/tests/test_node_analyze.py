@@ -276,35 +276,54 @@ def test_build_analyze_prompt_includes_iter_num_and_case_id(tmp_path):
     assert "windows" in prompt.lower()
 
 
-def test_build_analyze_prompt_includes_tool_call_discipline_directive(tmp_path):
-    """The analyze prompt MUST include a directive forbidding parallel
-    tool-call batches. Same root cause as the triage directive (Claude Code
-    product prompt instructs parallel batches; harness cancels siblings on
-    first error) but the cost is much higher here: Volatility plugins
-    are minutes each, not milliseconds, so a single parallel-batch cancel
-    can lose 30+ minutes of wall time on the 7200s analyze ceiling. Root
-    cause documented in
-    ~/handoffs/parallel-tool-call-cancellations-FINDINGS-2026-05-30.md
-    (subagent confirmed H5 with verbatim extraction of the product
-    system-prompt 'Maximize use of parallel tool calls' directive from
-    the claude v2.1.157 binary)."""
+def test_build_analyze_prompt_omits_anti_parallel_directive(tmp_path):
+    """The analyze prompt must NOT carry the Phase-1 'issue ONE tool call per
+    turn / do NOT batch' anti-parallel directive. With Bash subtracted at
+    spawn via providers.anthropic_cli.DISALLOWED_TOOLS the remaining toolset
+    (mcp__protocol_sift__*, Read, Glob, Grep) is reliable and parallelizing
+    it never trips the harness fail-fast cascade. Forbidding parallelism is
+    pure wall-time cost on the 7200s analyze ceiling.
+
+    The signature 'one tool call' is unique to the deleted directive; the
+    unrelated 'do not batch findings' clause in the surviving Recording
+    discipline targets findings, not tool calls, and is keyed separately
+    below — so removing the anti-parallel directive cannot clobber it."""
     s, case_dir = _make_state_with_evidence_dir(tmp_path)
     prompt = analyze._build_analyze_prompt(s, case_dir, iter_num=1)
     lowered = prompt.lower()
-    assert "one tool call" in lowered, (
-        "analyze prompt missing 'one tool call per turn' directive — needed "
-        "to override Claude Code's product-default 'Maximize parallel tool "
-        "calls' system prompt and prevent the harness fail-fast cascade."
-    )
-    assert "do not batch" in lowered, (
-        "analyze prompt missing explicit 'do NOT batch' clause."
+    assert "one tool call" not in lowered, (
+        "analyze prompt still carries the deleted anti-parallel directive — "
+        "with Bash denied at spawn the directive is pure wall-time cost on "
+        "the 7200s ceiling. Re-add only on a fresh cascade observation."
     )
 
 
-def test_build_analyze_prompt_discipline_directive_present_on_iter2(tmp_path):
-    """The directive is unconditional — it must appear on every iteration,
-    not just iter 1. Iter 2 carries prior findings + is more context-loaded;
-    that's exactly where parallel-batch cancellations are most expensive."""
+def test_build_analyze_prompt_retains_recording_discipline(tmp_path):
+    """Removing the anti-parallel directive must NOT clobber the unrelated
+    record-as-you-go Recording discipline. The two were adjacent in source
+    but solve different problems: anti-parallel is gone because Bash is
+    denied at spawn; record-as-you-go stays because partial findings
+    written before the ceiling fire are useful, findings held in working
+    memory die with the subprocess. Pin its survival explicitly."""
+    s, case_dir = _make_state_with_evidence_dir(tmp_path)
+    prompt = analyze._build_analyze_prompt(s, case_dir, iter_num=1)
+    lowered = prompt.lower()
+    assert "recording discipline" in lowered, (
+        "analyze prompt lost the surviving Recording discipline directive — "
+        "anti-parallel removal must not delete the unrelated record-as-you-go "
+        "guidance keyed on finding_record + the wallclock ceiling."
+    )
+    assert "do not batch findings" in lowered, (
+        "Recording discipline must retain the 'do not batch findings' "
+        "clause — finding-level batching is the real failure mode the "
+        "directive prevents, separate from tool-call batching."
+    )
+
+
+def test_build_analyze_prompt_omits_anti_parallel_on_iter2(tmp_path):
+    """The omission is unconditional — iter 2 carries prior findings and is
+    more context-loaded, so re-introducing the directive there would be the
+    sneakiest cost regression. Pin its absence on iter 2 too."""
     s, case_dir = _make_state_with_evidence_dir(tmp_path)
     s["_findings"] = [
         {
@@ -315,5 +334,5 @@ def test_build_analyze_prompt_discipline_directive_present_on_iter2(tmp_path):
     ]
     prompt = analyze._build_analyze_prompt(s, case_dir, iter_num=2)
     lowered = prompt.lower()
-    assert "one tool call" in lowered
-    assert "do not batch" in lowered
+    assert "one tool call" not in lowered
+    assert "recording discipline" in lowered

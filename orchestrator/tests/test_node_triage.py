@@ -125,19 +125,21 @@ def test_triage_timeout_fails_open_to_unknown(tmp_path, monkeypatch) -> None:
     assert s["_triage_false_positive"] is False
 
 
-def test_triage_prompt_includes_tool_call_discipline_directive(tmp_path, monkeypatch) -> None:
-    """The triage subagent prompt MUST include a directive forbidding
-    parallel tool-call batches. The Claude Code product system prompt
-    instructs the agent to 'Maximize parallel tool calls' (extracted
-    verbatim from claude v2.1.157 binary), which in turn triggers the
-    harness's fail-fast sibling-cancellation cascade — a single Bash
-    error (e.g. exit 2 from sudo) cancels every other in-flight sibling.
-    Observed in a prior triage trace:
-    10 parallel Bash blocks in one API message, 5 cancelled-as-parallel
-    after a single sibling errored. The user-supplied prompt is
-    concatenated AFTER the product system prompt, so an explicit
-    'one tool call per turn' directive empirically overrides the
-    system-prompt parallel directive on Claude 4-series."""
+def test_triage_prompt_omits_anti_parallel_directive(tmp_path, monkeypatch) -> None:
+    """The triage prompt must NOT carry the Phase-1 'issue ONE tool call per
+    turn / do NOT batch' anti-parallel directive. Now that Bash is subtracted
+    at spawn via providers.anthropic_cli.DISALLOWED_TOOLS, the remaining
+    toolset (mcp__protocol_sift__*, Read, Glob, Grep) is reliable and
+    parallelizing it never trips the harness fail-fast cancellation cascade.
+    Forbidding parallelism is pure wall-time cost. The signature 'one tool
+    call' is unique to the deleted directive — the unrelated 'do not batch
+    findings' clause in analyze's Recording discipline uses a different
+    phrasing keyed on findings, not tool calls, so this regex won't clobber
+    it.
+
+    Re-add the directive (and flip this assertion to a presence check) only
+    if a real `Cancelled: parallel tool call mcp__protocol_sift__*` event is
+    ever observed in a trace."""
     from mh_orchestrator.claude_node import SubagentResult
     from mh_orchestrator.nodes import triage as triage_mod
 
@@ -159,15 +161,10 @@ def test_triage_prompt_includes_tool_call_discipline_directive(tmp_path, monkeyp
     assert "prompt" in captured, "invoke_subagent was not called"
     prompt = captured["prompt"]
     lowered = prompt.lower()
-    assert "one tool call" in lowered, (
-        "triage prompt missing 'one tool call per turn' directive — needed "
-        "to override Claude Code's product-default 'Maximize parallel tool "
-        "calls' system prompt and prevent the harness fail-fast cascade."
-    )
-    assert "do not batch" in lowered, (
-        "triage prompt missing explicit 'do NOT batch' clause — without it "
-        "the agent may interpret 'one call' as 'one call per category' "
-        "rather than 'one call per assistant turn'."
+    assert "one tool call" not in lowered, (
+        "triage prompt still carries the deleted anti-parallel directive — "
+        "with Bash denied at spawn the directive is pure wall-time cost and "
+        "must NOT come back without a fresh cascade observation in a trace."
     )
 
 
