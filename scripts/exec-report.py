@@ -285,7 +285,7 @@ _ROLE_CONCERNS: dict[str, set[str]] = {
 _ROLE_TAKEAWAYS: dict[tuple[str, str], str] = {
     # CEO
     ("CEO", "remote_access_intrusion"): "An external party operated our system hands-on; treat this as a confirmed breach until eradication is verified.",
-    ("CEO", "ip_collection"): "{ip_count} intellectual-property documents were exposed across {project_count} projects; this is the asset at risk, not a hypothetical.",
+    ("CEO", "ip_collection"): "{ip_count} intellectual-property document(s) were exposed{projects_clause}; this is the asset at risk, not a hypothetical.",
     ("CEO", "data_exfil_cloud"): "Data left the perimeter via cloud sync; assume the attacker has copies regardless of what we do now.",
     ("CEO", "ransomware_destruction"): "Operational continuity is at stake; align with COO on recovery posture.",
 
@@ -435,6 +435,9 @@ def _render_executive_summary(state: dict, findings: list[dict], scope: dict) ->
         if "Projects" in d or "Project" in d or "Research" in d
     )
     ip_count = len(scope.get("affected_data") or [])
+    # Only mention "across N projects" if we actually identified projects.
+    # Saying "across 0 projects" reads as a template bug to leadership.
+    projects_clause = f" across {project_count} project(s)" if project_count else ""
 
     lines: list[str] = []
     lines.append("## Executive Summary")
@@ -464,16 +467,17 @@ def _render_executive_summary(state: dict, findings: list[dict], scope: dict) ->
         takeaway = _role_takeaway(role, relevant).format(
             ip_count=ip_count,
             project_count=project_count,
+            projects_clause=projects_clause,
         )
         ask = _ROLE_ASKS.get(role, "")
         # Markdown table cells can't contain raw newlines — use <br> if needed.
         lines.append(f"| **{role}** | {takeaway} | {ask} |")
     lines.append("")
 
-    # Top-3 things the entire leadership team should agree on.
-    lines.append("### The three calls leadership has to make this week")
-    lines.append("")
-    calls = []
+    # Top-3 things the entire leadership team should agree on. Header
+    # counts what we actually render, not a hardcoded "three" — readers
+    # noticed when the body had 2 items under a "three calls" header.
+    calls: list[str] = []
     if "remote_access_intrusion" in concerns or "lateral_movement" in concerns:
         calls.append("**Containment posture** — isolate now vs. observe to learn the attacker's intent (CISO + COO).")
     if "data_exfil_cloud" in concerns or "data_exfil_web" in concerns or "ip_collection" in concerns:
@@ -486,7 +490,11 @@ def _render_executive_summary(state: dict, findings: list[dict], scope: dict) ->
         calls.append("**Eradication threshold** — how confident must we be before declaring the attacker out (CISO + COO).")
     if not calls:
         calls.append("**Containment + comms posture** — alignment between technical containment and public stance.")
-    for i, c in enumerate(calls[:3], start=1):
+    rendered_calls = calls[:3]
+    n_word = {1: "one", 2: "two", 3: "three"}.get(len(rendered_calls), str(len(rendered_calls)))
+    lines.append(f"### The {n_word} call{'s' if len(rendered_calls) != 1 else ''} leadership has to make this week")
+    lines.append("")
+    for i, c in enumerate(rendered_calls, start=1):
         lines.append(f"{i}. {c}")
     lines.append("")
     lines.append("---")
@@ -494,21 +502,36 @@ def _render_executive_summary(state: dict, findings: list[dict], scope: dict) ->
     return lines
 
 
+_SCOPE_FIELDS = (
+    "affected_hosts", "affected_users", "affected_services",
+    "affected_data", "egress_destinations",
+)
+
+
 def _scope_summary(state: dict, findings: list[dict]) -> dict:
-    """Use the orchestrator's scope.compute_scope so the exec report works
-    even if the case predates the scope node (computes from findings).
+    """Prefer the orchestrator's recorded scope. Synthesize only when
+    scope was *never computed* (every bucket is None), not when scope ran
+    and produced empty lists.
+
+    The distinction matters: `affected_hosts = None` means "scope node
+    didn't run" → safe to regex-synthesize. `affected_hosts = []` means
+    "scope ran and found nothing" → we MUST NOT invent hosts from
+    free-text scans, because doing so put a non-existent IP
+    ('192.168.151.1') into a C-suite report.
     """
-    if any(state.get(k) for k in ("affected_hosts", "affected_users",
-                                  "affected_services", "affected_data")):
-        return {
-            "affected_hosts": list(state.get("affected_hosts") or []),
-            "affected_users": list(state.get("affected_users") or []),
-            "affected_services": list(state.get("affected_services") or []),
-            "affected_data": list(state.get("affected_data") or []),
-        }
+    # If *any* scope field is explicitly populated (not None), trust state
+    # entirely for *all* fields. Mixing recorded + synthesized leaks
+    # regex artifacts back into a case the orchestrator already scoped.
+    if any(state.get(k) is not None for k in _SCOPE_FIELDS):
+        out = {k: list(state.get(k) or []) for k in _SCOPE_FIELDS}
+        out["_source"] = "orchestrator"
+        return out
+
     # Synthesize from findings using the same extractor the scope node uses.
     synthetic_state = {"_findings": findings, "forensic_artifacts": []}
-    return scope_mod.compute_scope(synthetic_state)  # type: ignore[arg-type]
+    out = scope_mod.compute_scope(synthetic_state)  # type: ignore[arg-type]
+    out["_source"] = "synthesized"
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -557,8 +580,26 @@ def render(case_dir: Path) -> str:
                  f"{len(scope_data['affected_users'])} ({', '.join(scope_data['affected_users'][:5]) or '—'})")
     lines.append(f"- **Affected services / processes**: "
                  f"{len(scope_data['affected_services'])}")
-    lines.append(f"- **ATT&CK techniques observed**: "
-                 f"{len(techniques)} ({', '.join(techniques[:6]) or '—'})")
+    egress = scope_data.get("egress_destinations") or []
+    if egress:
+        lines.append(f"- **Egress destinations** (where data went / C2 called): "
+                     f"{len(egress)} ({', '.join(egress[:5])})")
+    # ATT&CK: show all techniques up to 12, otherwise disclose the truncation
+    # so readers don't assume the displayed 6 are the full set.
+    if len(techniques) <= 12:
+        attck_render = ", ".join(techniques) or "—"
+        lines.append(f"- **ATT&CK techniques observed**: {len(techniques)} ({attck_render})")
+    else:
+        attck_render = ", ".join(techniques[:6])
+        lines.append(f"- **ATT&CK techniques observed**: {len(techniques)} "
+                     f"(showing 6 of {len(techniques)}: {attck_render}; full list in Technical Appendix)")
+    # When scope was synthesized from regex rather than read from the
+    # orchestrator, label it so leadership doesn't treat fuzzy regex hits
+    # as forensic-grade attribution.
+    if scope_data.get("_source") == "synthesized":
+        lines.append("- _Scope numbers regex-inferred from findings text — "
+                     "the scope node didn't run on this case. Treat host/data "
+                     "counts as indicative, not authoritative._")
     if risk["score_percent"] is not None:
         lines.append(f"- **Risk reduction score**: {risk['score_percent']}% "
                      f"({risk['note']})")

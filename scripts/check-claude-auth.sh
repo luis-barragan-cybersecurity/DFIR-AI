@@ -17,9 +17,13 @@
 #   0  every check passed
 #   1  at least one ✗ row (or live probe failed in a way that should abort)
 #   2  bad CLI argument
+#   3  auth OK but headless mode (claude -p / API) is gated by billing —
+#      caller should fall back to --interactive mode (which uses the
+#      subscription TUI path, no separate API credits required).
 #
 # Callers:
-#   - bin/mh:cmd_run     calls --full as part of preflight
+#   - bin/mh:cmd_run     calls --full as part of preflight; checks exit 3
+#                        for the headless-gated → interactive fallback
 #   - bin/mh:cmd_doctor  calls --full
 #   - standalone         ./scripts/check-claude-auth.sh [--quick|--full]
 #
@@ -76,6 +80,18 @@ esac
 info "Claude auth check ($MODE)"
 
 errors=0
+headless_gated=0  # set to 1 when a billing/credit error blocks claude -p
+
+# Markers that indicate "headless is gated by API credits, not your subscription".
+# Liberal heuristic — Anthropic's exact wording may vary; we look for the most
+# common substrings. If --interactive would work but --p won't, return exit 3
+# so bin/mh:cmd_run can auto-switch modes.
+_billing_markers='credit balance|out of credits|api credits|insufficient credits|payment required|402|requires.*credits|requires.*api.*key|headless.*not.*available|need.*top.*up|billing.*required'
+
+_looks_like_billing() {
+    # $1 = haystack
+    echo "$1" | grep -qiE "$_billing_markers"
+}
 
 # ─── Detect auth mode ─────────────────────────────────────────────────────
 auth_mode=""
@@ -182,10 +198,26 @@ JSON
                     info "  fix: generate a fresh key at https://console.anthropic.com/settings/keys"
                     errors=$((errors + 1))
                     ;;
+                402)
+                    fail "live probe:   402 Payment Required — out of API credits"
+                    info "  the API call needs credits; your subscription doesn't cover -p / SDK calls"
+                    info "  option A: top up at https://console.anthropic.com/billing"
+                    info "  option B: re-run with --interactive (uses subscription, no credits)"
+                    headless_gated=1
+                    ;;
                 403)
-                    fail "live probe:   403 Forbidden — key lacks required permissions"
-                    info "  check the key's scopes in https://console.anthropic.com/settings/keys"
-                    errors=$((errors + 1))
+                    # 403 sometimes hides a billing/credit issue in the body
+                    if [[ -s "$resp_file" ]] && _looks_like_billing "$(cat "$resp_file")"; then
+                        fail "live probe:   403 Forbidden — looks like a billing/credit issue"
+                        info "  body excerpt: $(head -c 200 "$resp_file" | tr '\n' ' ')"
+                        info "  fix: top up at https://console.anthropic.com/billing"
+                        info "       OR re-run with --interactive (subscription path)"
+                        headless_gated=1
+                    else
+                        fail "live probe:   403 Forbidden — key lacks required permissions"
+                        info "  check the key's scopes in https://console.anthropic.com/settings/keys"
+                        errors=$((errors + 1))
+                    fi
                     ;;
                 429)
                     # Rate-limited is a soft warning: key is valid, you're just throttled.
@@ -204,11 +236,20 @@ JSON
                     errors=$((errors + 1))
                     ;;
                 *)
-                    fail "live probe:   unexpected $http_code"
-                    if [[ -s "$resp_file" ]]; then
-                        info "  body (first 200 chars): $(head -c 200 "$resp_file" | tr '\n' ' ')"
+                    # Unknown code — peek at the body for billing-style markers
+                    if [[ -s "$resp_file" ]] && _looks_like_billing "$(cat "$resp_file")"; then
+                        fail "live probe:   $http_code with billing-shaped body"
+                        info "  body excerpt: $(head -c 200 "$resp_file" | tr '\n' ' ')"
+                        info "  fix: top up at https://console.anthropic.com/billing"
+                        info "       OR re-run with --interactive (subscription path)"
+                        headless_gated=1
+                    else
+                        fail "live probe:   unexpected $http_code"
+                        if [[ -s "$resp_file" ]]; then
+                            info "  body (first 200 chars): $(head -c 200 "$resp_file" | tr '\n' ' ')"
+                        fi
+                        errors=$((errors + 1))
                     fi
-                    errors=$((errors + 1))
                     ;;
             esac
         fi
@@ -247,6 +288,18 @@ JSON
             elif (( probe_rc == 124 )); then
                 fail "live probe:   timed out after 15s (subscription stuck or network slow)"
                 errors=$((errors + 1))
+            elif _looks_like_billing "${probe_out:-}"; then
+                # Subscription auth exists but claude -p specifically asked for
+                # API credits → headless mode is gated. Signal the caller to
+                # fall back to --interactive (which uses the TUI, no -p).
+                fail "live probe:   claude -p reported a billing/credit error"
+                info "  excerpt: $(printf '%s\n' "$probe_out" | head -3 | cut -c1-200)"
+                info "  meaning: headless mode (claude -p) needs API credits even"
+                info "           when your subscription is active. Interactive mode"
+                info "           (the TUI) still works on subscription."
+                info "  fix:     re-run with --interactive, OR top up at"
+                info "           https://console.anthropic.com/billing"
+                headless_gated=1
             else
                 fail "live probe:   subscription probe failed (rc=$probe_rc)"
                 if [[ -n "${probe_out:-}" ]]; then
@@ -261,9 +314,14 @@ fi
 
 # ─── Result ───────────────────────────────────────────────────────────────
 echo ""
-if (( errors == 0 )); then
+if (( errors == 0 )) && (( headless_gated == 0 )); then
     ok "all checks passed"
     exit 0
+elif (( errors == 0 )) && (( headless_gated == 1 )); then
+    # Auth is fine; --interactive would work. Caller can fall back.
+    warn "auth ok, but headless mode (claude -p) is gated by billing"
+    info "  bin/mh:cmd_run will auto-fall-back to --interactive when it sees exit 3"
+    exit 3
 else
     fail "$errors check(s) failed — see ✗ rows above"
     exit 1

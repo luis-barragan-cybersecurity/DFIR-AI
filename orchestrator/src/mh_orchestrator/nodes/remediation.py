@@ -99,7 +99,10 @@ def run(state: IncidentState) -> IncidentState:
     )
 
     state["phase"] = "remediation"
-    picerl.advance_iso27035(state, picerl.picerl_phase_for("remediation_plan"))
+    # NOTE: must match the key in picerl.NODE_TO_PICERL — the string
+    # "remediation_plan" silently fell through to default "identification"
+    # and rolled iso27035_phase back to detection_and_reporting.
+    picerl.advance_iso27035(state, picerl.picerl_phase_for(NODE_NAME))
     state["_node_history"].append(NODE_NAME)
 
     record_audit(

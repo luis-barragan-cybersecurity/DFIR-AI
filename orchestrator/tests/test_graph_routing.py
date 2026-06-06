@@ -69,7 +69,10 @@ def test_route_after_analyze_complete_proceeds() -> None:
 
 
 def test_route_after_analyze_iter_cap_proceeds() -> None:
-    s = make_state(_rca_complete=False, _analyze_iter=3)
+    # Cap default bumped 3 → 5 (MH_ANALYZE_MAX_ITER). Use 5 so this still
+    # tests the cap-reached branch with the new default.
+    from mh_orchestrator.graph import _ANALYZE_ITER_CAP
+    s = make_state(_rca_complete=False, _analyze_iter=_ANALYZE_ITER_CAP)
     assert route_after_analyze(s) == "attack_tag"
 
 

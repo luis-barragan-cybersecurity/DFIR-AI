@@ -31,6 +31,37 @@ from typing import Any
 from . import proc_activity
 
 
+class HeadlessBillingError(RuntimeError):
+    """Raised when `claude -p` fails specifically because headless mode
+    is gated by billing (separate API credit pool, distinct from the
+    subscription / Max bucket). Distinct from generic subagent failure so
+    the orchestrator-level catch can surface a clear ``rerun in --interactive``
+    hint instead of generic exit-code error.
+
+    Detection is heuristic: the wrapper greps the combined stdout+stderr
+    for substrings like "credit balance", "out of credits", "api credits",
+    "402 Payment Required", etc. Liberal on purpose — the exact Anthropic
+    wording varies across CLI versions.
+    """
+
+
+# Liberal regex — matches the most common billing-error substrings. False
+# positives are fine here; a false positive just means the orchestrator
+# raises HeadlessBillingError and the user gets a "re-run with --interactive"
+# hint, which is the same advice they'd get from any other -p failure mode.
+_BILLING_RE = re.compile(
+    r"(credit balance|out of credits|api credits|insufficient credits"
+    r"|payment required|\b402\b|requires.*credits|requires.*api.*key"
+    r"|headless.*not.*available|need.*top.*up|billing.*required)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_billing(text: str) -> bool:
+    """Return True if `text` contains a billing-shaped error marker."""
+    return bool(text) and bool(_BILLING_RE.search(text))
+
+
 def should_stub(node_name: str) -> bool:
     """Decide whether an LLM-invoking node should use its stub branch.
 
@@ -318,12 +349,27 @@ def invoke_subagent(
     a call is killed only when genuinely idle (no CPU and no output) for
     MH_SUBAGENT_IDLE_TIMEOUT_SEC, or after the MH_SUBAGENT_MAX_SEC ceiling. A
     timeout returns timed_out=True (never raises) so the caller can degrade.
+
+    Side effect: emits TUI signals (``tui.update_state`` / ``tui.now``) around
+    the spawn so the live dashboard reflects what's happening. TUI is a no-op
+    singleton when MH_QUIET=1, so this is safe in tests/CI.
     """
+    from . import tui  # local import — TUI module may not be available in CI
+
     project_dir = _resolve_project_dir()
     tools = allowed_tools if allowed_tools is not None else DEFAULT_ALLOWED_TOOLS
     idle_timeout = _env_float("MH_SUBAGENT_IDLE_TIMEOUT_SEC", 600.0)
     max_sec = _env_float("MH_SUBAGENT_MAX_SEC", 7200.0)
     poll_sec = _env_float("MH_SUBAGENT_POLL_SEC", 15.0)
+
+    try:
+        tui.update_state(subagent=subagent_name)
+        tui.now(
+            f"{subagent_name} · spawning claude -p subprocess",
+            f"idle_timeout={idle_timeout:.0f}s · max={max_sec:.0f}s · tools: {len(tools)}",
+        )
+    except Exception:  # noqa: BLE001 — TUI errors must never block the agent call
+        pass
 
     with tempfile.TemporaryDirectory(prefix="mh-mcp-") as td:
         mcp_cfg = _write_mcp_config(project_dir, Path(td))
@@ -341,8 +387,102 @@ def invoke_subagent(
 
     parsed, final_text = _parse_stream_json(stdout) if headless else ([], "")
     _write_subagent_trace(subagent_name, stdout, stderr)
+
+    # Post-spawn TUI announcement. Mirror notable parsed events for the
+    # demo recording — best-effort only.
+    try:
+        if timed_out:
+            tui.now(
+                f"{subagent_name} · timed out ({reason})",
+                f"recorded as dissent · check audit.jsonl for the trace",
+            )
+        else:
+            tui.now(
+                f"{subagent_name} · subagent returned (exit {rc})",
+                f"messages: {len(parsed)} · final_text: {len(final_text)} chars",
+            )
+        for msg in parsed:
+            try:
+                _tui_mirror(tui, subagent_name, msg)
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Defense-in-depth: if the subprocess exited non-zero AND the combined
+    # output looks like a billing/credit error, raise HeadlessBillingError so
+    # the caller can surface a clean "switch to --interactive" message. The
+    # preflight in bin/mh catches this BEFORE the orchestrator starts; this
+    # guards the mid-run case where credits ran out partway through.
+    if rc != 0 and not timed_out:
+        combined = (stdout or "") + "\n" + (stderr or "")
+        if _looks_like_billing(combined):
+            raise HeadlessBillingError(
+                f"claude -p exit={rc} with billing-shaped error. "
+                f"Re-run with --interactive (subscription path) or top up at "
+                f"https://console.anthropic.com/billing. "
+                f"Output excerpt: {combined[:300]!r}"
+            )
+
     return SubagentResult(
         exit_code=rc, stdout=stdout, stderr=stderr,
         parsed_messages=parsed, final_text=final_text,
         timed_out=timed_out, timeout_reason=reason,
     )
+
+
+def _tui_mirror(tui_mod, subagent_name: str, msg: dict[str, Any]) -> None:
+    """Translate one stream-json message into a TUI NOW update.
+
+    stream-json schema (relevant subset):
+      {type: "system", subtype: "init"}                 → handshake done
+      {type: "assistant", message: {content: [...]}}   → model spoke or
+                                                          called a tool
+      {type: "user", message: {content: [tool_result]}}→ tool returned
+      {type: "result", subtype: "success"|"error"}     → run complete
+    """
+    t = msg.get("type")
+    if t == "system" and msg.get("subtype") == "init":
+        tui_mod.now(f"{subagent_name} · session initialized",
+                    "subagent loaded · ready for tool calls")
+        return
+    if t == "assistant":
+        content = (msg.get("message") or {}).get("content") or []
+        for block in content:
+            btype = block.get("type")
+            if btype == "tool_use":
+                tool = block.get("name", "?")
+                inputs = block.get("input") or {}
+                # First non-trivial value is usually the most informative
+                # (path / plugin / query). Truncated for screen width.
+                argv_summary = " · ".join(
+                    f"{k}={str(v)[:40]}" for k, v in list(inputs.items())[:2]
+                )
+                tui_mod.now(
+                    f"{subagent_name} · calling {tool}",
+                    argv_summary or "(no args)",
+                )
+                return
+            if btype == "text":
+                snippet = (block.get("text") or "").strip().splitlines()
+                if snippet:
+                    tui_mod.now(
+                        f"{subagent_name} · model speaking",
+                        snippet[0][:80],
+                    )
+                    return
+    elif t == "user":
+        content = (msg.get("message") or {}).get("content") or []
+        for block in content:
+            if block.get("type") == "tool_result":
+                is_error = block.get("is_error", False)
+                tui_mod.now(
+                    f"{subagent_name} · tool returned"
+                    + (" (ERROR)" if is_error else ""),
+                    "processing result",
+                )
+                return
+    elif t == "result":
+        sub = msg.get("subtype", "")
+        tui_mod.now(f"{subagent_name} · result · {sub}",
+                    "subagent finished")

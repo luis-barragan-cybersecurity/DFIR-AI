@@ -3,16 +3,29 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
+
+import pytest
 
 from mh_orchestrator import proc_activity
 
+# /proc only exists on Linux (SIFT, CI). On macOS/Windows dev boxes the
+# proc_activity module no-ops cleanly; the tests that prove it WORKS on
+# Linux can only run on Linux. Skip them elsewhere instead of failing.
+_linux_only = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="proc_activity reads /proc which only exists on Linux",
+)
 
+
+@_linux_only
 def test_proc_available_is_true_on_linux():
     # SIFT/CI is Linux; /proc exists.
     assert proc_activity.proc_available() is True
 
 
+@_linux_only
 def test_busy_process_registers_cpu_activity():
     # A tight busy-loop in its own session/group burns CPU between samples.
     proc = subprocess.Popen(

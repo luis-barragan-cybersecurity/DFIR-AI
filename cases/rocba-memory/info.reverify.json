@@ -1,0 +1,103 @@
+
+[
+  {
+    "Value": "0xf8025d600000",
+    "Variable": "Kernel Base",
+    "__children": []
+  },
+  {
+    "Value": "0x1ad000",
+    "Variable": "DTB",
+    "__children": []
+  },
+  {
+    "Value": "file:///private/tmp/mh-prodtest-1780183751/.venv-vol/lib/python3.12/site-packages/volatility3/symbols/windows/ntkrnlmp.pdb/15B12C74F0E177581B6B27DD4C5022C2-1.json.xz",
+    "Variable": "Symbols",
+    "__children": []
+  },
+  {
+    "Value": "True",
+    "Variable": "Is64Bit",
+    "__children": []
+  },
+  {
+    "Value": "False",
+    "Variable": "IsPAE",
+    "__children": []
+  },
+  {
+    "Value": "0 WindowsIntel32e",
+    "Variable": "layer_name",
+    "__children": []
+  },
+  {
+    "Value": "1 FileLayer",
+    "Variable": "memory_layer",
+    "__children": []
+  },
+  {
+    "Value": "0xf8025e20f340",
+    "Variable": "KdVersionBlock",
+    "__children": []
+  },
+  {
+    "Value": "15.19041",
+    "Variable": "Major/Minor",
+    "__children": []
+  },
+  {
+    "Value": "34404",
+    "Variable": "MachineType",
+    "__children": []
+  },
+  {
+    "Value": "4",
+    "Variable": "KeNumberProcessors",
+    "__children": []
+  },
+  {
+    "Value": "2020-11-16 02:32:38+00:00",
+    "Variable": "SystemTime",
+    "__children": []
+  },
+  {
+    "Value": "C:\\WINDOWS",
+    "Variable": "NtSystemRoot",
+    "__children": []
+  },
+  {
+    "Value": "NtProductWinNt",
+    "Variable": "NtProductType",
+    "__children": []
+  },
+  {
+    "Value": "10",
+    "Variable": "NtMajorVersion",
+    "__children": []
+  },
+  {
+    "Value": "0",
+    "Variable": "NtMinorVersion",
+    "__children": []
+  },
+  {
+    "Value": "10",
+    "Variable": "PE MajorOperatingSystemVersion",
+    "__children": []
+  },
+  {
+    "Value": "0",
+    "Variable": "PE MinorOperatingSystemVersion",
+    "__children": []
+  },
+  {
+    "Value": "34404",
+    "Variable": "PE Machine",
+    "__children": []
+  },
+  {
+    "Value": "Sun Aug 27 22:21:11 2023",
+    "Variable": "PE TimeDateStamp",
+    "__children": []
+  }
+]

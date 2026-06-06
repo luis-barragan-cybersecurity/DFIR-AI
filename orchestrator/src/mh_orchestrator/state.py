@@ -62,6 +62,10 @@ class IncidentState(TypedDict, total=False):
     affected_users: list[str]
     affected_services: list[str]
     affected_data: list[str]
+    # IPs the scope node tagged as exfil/C2 destinations (from finding
+    # ioc[].context). Kept separate from affected_hosts so leadership
+    # never reads "we own this box" about an attacker-side IP.
+    egress_destinations: list[str]
     # Internal — not in §11.1 but needed for plumbing
     _node_history: list[str]
     _output_dir: str
@@ -95,6 +99,12 @@ class IncidentState(TypedDict, total=False):
     _verifier_complete: bool
     _verifier_decisions: list[dict[str, Any]]
     _verifier_revision_count: int
+    # Structured critiques from the most-recent verifier pass — populated
+    # by verifier_pass when it routes back to analyze. analyze reads this
+    # to prepend a "verifier lessons" section to the subagent prompt so
+    # the next iteration can address each non-agree decision by id. Empty
+    # when no learning iteration is in flight.
+    _dissent_lessons: list[dict[str, Any]]
     _findings: list[dict[str, Any]]
     _max_blast_score: int
     human_approval_required: bool
@@ -119,6 +129,7 @@ def new_state(incident_id: str) -> IncidentState:
         "affected_users": [],
         "affected_services": [],
         "affected_data": [],
+        "egress_destinations": [],
         "_node_history": [],
         "_output_dir": "",
         "_input_dir": "",
@@ -134,6 +145,7 @@ def new_state(incident_id: str) -> IncidentState:
         "_verifier_complete": False,
         "_verifier_decisions": [],
         "_verifier_revision_count": 0,
+        "_dissent_lessons": [],
         "_findings": [],
         "_max_blast_score": 0,
         "human_approval_required": False,
@@ -159,6 +171,7 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "affected_users": list(s.get("affected_users", [])),
         "affected_services": list(s.get("affected_services", [])),
         "affected_data": list(s.get("affected_data", [])),
+        "egress_destinations": list(s.get("egress_destinations", [])),
         "_node_history": list(s.get("_node_history", [])),
         "_output_dir": s.get("_output_dir", ""),
         "_input_dir": s.get("_input_dir", ""),
@@ -174,6 +187,7 @@ def serialize_state(s: IncidentState) -> dict[str, Any]:
         "_verifier_complete": s.get("_verifier_complete", False),
         "_verifier_decisions": list(s.get("_verifier_decisions", [])),
         "_verifier_revision_count": s.get("_verifier_revision_count", 0),
+        "_dissent_lessons": list(s.get("_dissent_lessons", [])),
         "_findings": list(s.get("_findings", [])),
         "_max_blast_score": s.get("_max_blast_score", 0),
         "human_approval_required": s.get("human_approval_required", False),
@@ -198,6 +212,7 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["affected_users"] = list(d.get("affected_users", []))
     s["affected_services"] = list(d.get("affected_services", []))
     s["affected_data"] = list(d.get("affected_data", []))
+    s["egress_destinations"] = list(d.get("egress_destinations", []))
     s["_node_history"] = list(d.get("_node_history", []))
     s["_output_dir"] = d.get("_output_dir", "")
     s["_input_dir"] = d.get("_input_dir", "")
@@ -213,6 +228,7 @@ def deserialize_state(d: dict[str, Any]) -> IncidentState:
     s["_verifier_complete"] = d.get("_verifier_complete", False)
     s["_verifier_decisions"] = list(d.get("_verifier_decisions", []))
     s["_verifier_revision_count"] = d.get("_verifier_revision_count", 0)
+    s["_dissent_lessons"] = list(d.get("_dissent_lessons", []))
     s["_findings"] = list(d.get("_findings", []))
     s["_max_blast_score"] = d.get("_max_blast_score", 0)
     s["human_approval_required"] = d.get("human_approval_required", False)

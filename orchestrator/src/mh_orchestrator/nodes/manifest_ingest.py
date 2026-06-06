@@ -102,12 +102,14 @@ def manifest_self_sha256(manifest_path: Path) -> str:
 
 
 def run(state: IncidentState) -> IncidentState:
+    from ..persistence import append_history, write_checkpoint
     from . import record_audit  # local import avoids circular
 
     output_dir = Path(state["_output_dir"]) if state.get("_output_dir") else None
     if output_dir is None:
         # Pathological synthetic test path — no output dir at all. Skip but
-        # still emit an audit event so the absence is visible.
+        # still emit an audit event so the absence is visible. (No snapshot
+        # possible without an output dir.)
         state["_node_history"].append("manifest_ingest")
         return state
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -131,6 +133,8 @@ def run(state: IncidentState) -> IncidentState:
             },
         )
         state["_node_history"].append("manifest_ingest")
+        write_checkpoint(state, output_dir)
+        append_history(state, output_dir, node="manifest_ingest")
         return state
 
     entries = build_manifest(input_dir)
@@ -150,4 +154,9 @@ def run(state: IncidentState) -> IncidentState:
     )
 
     state["_node_history"].append("manifest_ingest")
+    # Emit per-node snapshot so state.history.jsonl is complete. Skipping
+    # this previously left manifest_ingest invisible in the audit-trail
+    # deliverable even though _node_history declared it had run.
+    write_checkpoint(state, output_dir)
+    append_history(state, output_dir, node="manifest_ingest")
     return state

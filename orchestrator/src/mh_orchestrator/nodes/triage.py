@@ -1,6 +1,7 @@
 """triage node — invokes per-OS specialist subagent for severity classification."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .. import csf_tags, picerl
@@ -24,6 +25,24 @@ OS_TO_SUBAGENT = {
     "memory_dump": "WindowsAgent",
     "unknown": "WindowsAgent",  # Fallback; real triage would refuse
 }
+
+ALLOWED_TOOLS = [
+    "mcp__protocol_sift__hash",
+    "mcp__protocol_sift__os_detect",
+    "mcp__protocol_sift__magic_check",
+    # memory_volatility is the only forensic tool triage gets. The intent
+    # is a SINGLE cheap-ish probe (e.g. windows.info to confirm the kernel
+    # build + identify whether it's a server / workstation / DC) — not a
+    # full memory sweep, which is analyze's job. Without this, triage on
+    # a raw memory image has zero signal and reflexively grades "low",
+    # which lets route_after_triage short-circuit the pipeline through
+    # suppress and judges never see analyze/contain/eradicate run.
+    "mcp__protocol_sift__memory_volatility",
+    "mcp__protocol_sift__finding_record",
+    "Read", "Glob", "Grep",
+]
+
+
 
 def run(state: IncidentState) -> IncidentState:
     from . import emit_message, record_audit
@@ -63,43 +82,97 @@ def run(state: IncidentState) -> IncidentState:
                      metadata={"exit_code": 0, "stub": True})
         record_audit(state, event="triage_complete_stub", data={"subagent": subagent, "severity": "medium"})
     else:
-        result = invoke_subagent(
-            subagent_name=subagent,
-            prompt=(
-                "Classify this alert. Reply with ONE word: low / medium / high / "
-                "critical for a real incident, OR 'false_positive' ONLY if you can "
-                "affirmatively confirm it is benign / no incident. When in doubt, "
-                "pick a severity — do NOT reply false_positive unless you are sure, "
-                "because that suppresses the entire investigation.\n\n"
-                # Tool-call discipline override. Claude Code's product system
-                # prompt instructs the agent to 'Maximize parallel tool calls'.
-                # The harness uses fail-fast scheduling: when one sibling in a
-                # parallel batch errors, the rest are cancelled. Observed in
-                # a prior triage trace: 10 parallel Bash
-                # blocks in one API message, 5 cancelled-as-parallel after a
-                # single sibling errored (~45% waste). User-supplied prompt
-                # is concatenated AFTER the product system prompt, so this
-                # explicit directive overrides it. See
-                # ~/handoffs/parallel-tool-call-cancellations-FINDINGS-2026-05-30.md.
-                "Tool-call discipline: issue ONE tool call per assistant turn "
-                "and wait for the result before issuing the next. Do NOT batch "
-                "multiple tool calls in a single response. A sibling failure "
-                "in a batch cancels the rest, wasting context and wall time."
-            ),
-            headless=True,
+        # Build a case-brief-aware probe prompt. The base structure here is
+        # mine: evidence listing + mandatory probe sequence so triage grounds
+        # severity in real Volatility output instead of reflexively answering
+        # "low" on empty input. Layered on top is the team's false_positive
+        # contract (route_after_triage now suppresses on _triage_false_positive
+        # not on severity) plus their tool-call discipline override.
+        #
+        # Team's invoke_subagent no longer takes case_dir / mcp_config / timeout
+        # explicitly — it resolves project root internally and uses MH_SUBAGENT_*
+        # env vars for the liveness monitor. We use the input dir off the state.
+        evidence_dir = Path(state.get("_input_dir") or "") if state.get("_input_dir") else out.parent / "input"
+        case_brief = ""
+        brief_path = evidence_dir / "_case-brief.md"
+        if brief_path.exists():
+            try:
+                case_brief = brief_path.read_text(encoding="utf-8", errors="replace")[:4000]
+            except OSError:
+                case_brief = ""
+
+        evidence_listing = ""
+        if evidence_dir.exists():
+            try:
+                evidence_listing = "\n".join(
+                    f"  - {p.name} ({p.stat().st_size:,} bytes)"
+                    for p in sorted(evidence_dir.iterdir()) if p.is_file()
+                )
+            except OSError:
+                evidence_listing = "  (could not enumerate evidence dir)"
+
+        probe_directive = (
+            "**Mandatory probe sequence (DO NOT skip — these tool calls "
+            "ground your severity classification in real evidence):**\n"
+            "1. Call mcp__protocol_sift__magic_check on each evidence file "
+            "to confirm format.\n"
+            "2. If a memory image (.raw / .mem / .dmp / .vmem) is present, "
+            "call mcp__protocol_sift__memory_volatility ONCE with "
+            "plugin='windows.info' against that image. This confirms the "
+            "kernel build and tells you whether you're looking at a "
+            "workstation, server, or domain controller — all of which "
+            "shift the severity floor.\n"
+            "3. THEN classify severity. The classification must reflect "
+            "what the probe revealed PLUS the case brief context (if "
+            "present). A confirmed incident in the brief with a real "
+            "kernel build behind it is at minimum 'medium', not 'low'.\n"
         )
-        if result.timed_out:
+        brief_section = (
+            "=== CASE BRIEF (READ FIRST — sets the threat model) ===\n"
+            f"{case_brief}\n"
+            "=== END CASE BRIEF ===\n\n"
+            if case_brief else ""
+        )
+        prompt = (
+            f"{brief_section}"
+            "Evidence files in this case:\n"
+            f"{evidence_listing}\n\n"
+            f"{probe_directive}\n"
+            "After the probe sequence completes, reply with ONE word: "
+            "low | medium | high | critical for a real incident, OR "
+            "'false_positive' ONLY if you can affirmatively confirm the "
+            "evidence is benign / no incident. When in doubt, pick a "
+            "severity — do NOT reply false_positive unless you are sure, "
+            "because that suppresses the entire investigation.\n\n"
+            "Tool-call discipline: issue ONE tool call per assistant "
+            "turn and wait for the result before issuing the next. Do "
+            "NOT batch multiple tool calls in a single response — a "
+            "sibling failure in a parallel batch cancels the rest, "
+            "wasting context and wall time."
+        )
+        result = invoke_subagent(
+            subagent_name=subagent, prompt=prompt,
+            allowed_tools=ALLOWED_TOOLS, headless=True,
+        )
+
+        # Timeout handling — team's invoke_subagent returns timed_out=True
+        # (never raises) so the caller can degrade gracefully. Treat the
+        # same as the prior subprocess.TimeoutExpired catch: severity=unknown,
+        # _triage_false_positive=False (fail-open: investigate), continue.
+        if getattr(result, "timed_out", False):
             state["severity"] = "unknown"
-            state["_triage_false_positive"] = False  # fail-open: investigate
+            state["_triage_false_positive"] = False
             emit_message(
                 state, from_agent=subagent, to_agent="orchestrator",
                 role="tool_failure",
-                content=f"[timeout:{result.timeout_reason}] triage terminated",
-                metadata={"timed_out": True, "reason": result.timeout_reason},
+                content=f"[timeout:{getattr(result, 'timeout_reason', 'unknown')}] triage terminated",
+                metadata={"timed_out": True,
+                          "reason": getattr(result, 'timeout_reason', 'unknown')},
             )
             record_audit(
                 state, event="triage_timeout",
-                data={"subagent": subagent, "reason": result.timeout_reason},
+                data={"subagent": subagent,
+                      "reason": getattr(result, 'timeout_reason', 'unknown')},
             )
             csf_tags.mark_satisfied(state, csf_tags.RS_MA_03)
             picerl.advance_iso27035(state, picerl.picerl_phase_for("triage"))
@@ -107,6 +180,7 @@ def run(state: IncidentState) -> IncidentState:
             write_checkpoint(state, out)
             append_history(state, out, node="triage")
             return state
+
         # Trust-contract fix (#3): when the subagent reply is empty or doesn't
         # parse to an allowed token, do NOT silently default to "medium" —
         # that synthesizes confidence we don't have. Record severity="unknown"

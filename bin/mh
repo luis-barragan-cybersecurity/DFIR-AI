@@ -447,18 +447,69 @@ EOF
         info "    install:          https://docs.claude.com/en/docs/claude-code/quickstart"
         pf_ok=0
     fi
+    # Eager mode-pick: no API key → default to --interactive.
+    #
+    # Headless mode (`claude -p`, used by the LangGraph orchestrator's
+    # triage/analyze/verifier_pass nodes) bills against the API credit
+    # pool, not the Pro/Max subscription. A subscription-only user has
+    # no realistic way to run LangGraph successfully — they'd hit a
+    # billing error at the first LLM-invoking node. Default to
+    # --interactive immediately so the TUI path (which DOES use the
+    # subscription bucket) is what runs.
+    #
+    # Override: if the user is sure their key/credits work and wants the
+    # full LangGraph pipeline, they can set ANTHROPIC_API_KEY explicitly
+    # and re-run.
+    if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && (( interactive == 0 )); then
+        info "  no ANTHROPIC_API_KEY in env — defaulting to --interactive"
+        info "                                (subscription path; bills against Pro/Max plan,"
+        info "                                 no API credits needed; skill-driven Claude TUI)"
+        interactive=1
+    fi
+
     # Claude auth: format check + live API probe (Tier A + Tier C). Costs
     # ≈ $0.0000004 per `mh run` in API-key mode (one claude-haiku-4-5 call
     # at max_tokens=1). Subscription mode pings via `claude -p` instead.
     # Live probe is skipped automatically when CLAUDECODE=1 (the row below
     # will hard-fail in that case anyway). See scripts/check-claude-auth.sh.
+    #
+    # Exit codes interpretation:
+    #   0  all good — proceed in whatever mode the user asked for
+    #   3  auth ok but `claude -p` is billing-gated (recent change: headless
+    #      bills against the API credit pool, not the subscription bucket).
+    #      Auto-switch to --interactive so subscription users can still run
+    #      end-to-end without buying API credits. Skill-driven TUI uses the
+    #      same model + subscription billing.
+    #   else  hard preflight fail
     info "  claude auth check:"
     local auth_check_rc=0
     "${MH_HOME}/scripts/check-claude-auth.sh" --full 2>&1 | sed 's/^/    /' || true
     auth_check_rc=${PIPESTATUS[0]:-0}
-    if (( auth_check_rc != 0 )); then
-        pf_ok=0
-    fi
+    case "$auth_check_rc" in
+        0)
+            : # all good
+            ;;
+        3)
+            if (( interactive )); then
+                # User already explicitly asked for interactive — auth check's
+                # signal lines up with their intent; nothing to switch.
+                warn "  headless gated but you already passed --interactive — fine, proceeding"
+            else
+                warn "  headless (claude -p) is gated by billing — auto-falling-back to --interactive"
+                info "    why: recent Claude billing change — non-interactive (-p) calls bill"
+                info "         against the API credit pool, not your subscription. Interactive"
+                info "         TUI mode still bills against subscription, same model, same tokens."
+                info "    note: the TUI will open in your terminal — you'll see live tool calls."
+                info "         type /exit when triage is complete (the agent usually exits on its own)."
+                info "    to force headless anyway: top up API credits at"
+                info "         https://console.anthropic.com/billing"
+                interactive=1
+            fi
+            ;;
+        *)
+            pf_ok=0
+            ;;
+    esac
     if [[ "${CLAUDECODE:-0}" == "1" ]]; then
         fail "  CLAUDECODE=1 detected — running mh from inside another Claude Code session"
         info "    why this matters: the triage/analyze/verifier_pass nodes shell out to"

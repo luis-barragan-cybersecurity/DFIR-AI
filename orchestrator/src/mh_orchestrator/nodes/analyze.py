@@ -21,7 +21,13 @@ from ..persistence import append_history, write_checkpoint
 from ..state import IncidentState
 
 NODE_NAME = "analyze"
-MAX_ITER = 3
+# RCA iteration cap. Was hardcoded at 3, which on large memory images
+# (rocba-memory 17.7GB) routinely tripped before the subagent finished
+# surveying all plugin outputs — left "analyze_iter_cap_reached" in the
+# audit log and ~10 documented IOCs unsurfaced. Env-configurable so ops
+# can scale with case size without code change.
+import os as _os_mod  # noqa: E402
+MAX_ITER = int(_os_mod.environ.get("MH_ANALYZE_MAX_ITER", "5"))
 
 # Map _detected_os → subagent name (mirrors triage.OS_TO_SUBAGENT).
 # memory_dump intentionally routes to WindowsAgent — the agent's prompt
@@ -159,6 +165,38 @@ def _build_analyze_prompt(state: IncidentState, case_dir: Path, iter_num: int) -
             lines.append("")
             prior_findings_section = "\n".join(lines)
 
+    # ─── Hermes-style self-correction: inject prior-iteration verifier ──
+    # ─── critiques as structured lessons the next pass must address by ──
+    # ─── finding_id. Populated by verifier_pass on dissent re-route.    ──
+    # ─── Empty on the first iteration (no prior verifier pass).         ──
+    lessons = state.get("_dissent_lessons") or []
+    lessons_section = ""
+    if lessons:
+        lesson_lines = []
+        for L in lessons[:20]:  # cap lines for prompt-budget safety
+            fid = L.get("finding_id", "?")
+            verdict = L.get("verdict", "?")
+            says = (L.get("verifier_says") or "")[:500]
+            lesson_lines.append(
+                f"- {fid} (verdict: {verdict}): {says}"
+            )
+        lessons_section = (
+            "=== VERIFIER CRITIQUES FROM PRIOR ITERATION — YOU MUST ADDRESS ===\n"
+            "A previous analyze pass produced findings. The independent "
+            "Verifier subagent re-ran each finding's cited tool and "
+            "disagreed on the items below. For each, EITHER:\n"
+            "  (a) re-record the finding with the issue corrected (better pin, "
+            "      clearer rationale, fixed confidence), or\n"
+            "  (b) explicitly retract it by recording a new finding with "
+            "      confidence='unknown' explaining why the prior claim couldn't "
+            "      be substantiated.\n\n"
+            "Do not silently re-emit the same claim — the Verifier will "
+            "dissent again and we will burn another loop iteration.\n\n"
+            "Critiques to address:\n"
+            + "\n".join(lesson_lines) + "\n"
+            "=== END VERIFIER CRITIQUES ===\n\n"
+        )
+
     # OS-specific mandatory tool sequence. For memory dumps the agent
     # previously replied 'DONE' after 1-2 min without invoking the
     # heavy-cost Volatility plugins; the explicit MUST list forces the
@@ -195,6 +233,7 @@ def _build_analyze_prompt(state: IncidentState, case_dir: Path, iter_num: int) -
         f"Evidence files under {evidence_dir}/:\n{evidence_listing}\n\n"
         f"{case_brief_section}"
         f"{prior_findings_section}"
+        f"{lessons_section}"
         f"{os_specific_directive}"
         "Analyze the evidence for root cause and IOCs. Use the per-OS "
         "MCP forensic tools available to you (e.g., mcp__protocol_sift__"
@@ -226,6 +265,25 @@ def _build_analyze_prompt(state: IncidentState, case_dir: Path, iter_num: int) -
         "confidence_rationale (one sentence in the form 'X because Y' "
         "justifying the chosen confidence), and >=1 pin. Tag MITRE ATT&CK "
         "techniques (T####) in the claim text where relevant.\n\n"
+        "\n\n"
+        "**Pin format — STRICT (Verifier re-runs your tools and compares "
+        "byte-for-byte; sloppy pins → dissent → another loop iteration):**\n"
+        "  • `artifact`: the evidence filename (e.g. `Rocba-Memory.raw`), "
+        "    NOT a paraphrase or summary.\n"
+        "  • `tool`: the exact MCP tool name that produced the row "
+        "    (e.g. `windows.netscan`, `windows.pslist`).\n"
+        "  • `locator`: a structured locator the Verifier can use to "
+        "    re-fetch the same row — for Volatility plugins use "
+        "    `{type: \"vol_row\", value: \"<plugin>:<row_key>\"}` where "
+        "    row_key is PID, offset, or another unique field from the row.\n"
+        "  • `raw_excerpt`: the FULL JSON row from the plugin output, "
+        "    quoted VERBATIM (not a key=value summary). Example:\n"
+        "      raw_excerpt: '{\"Created\":\"2020-11-16T02:36:14+00:00\","
+        "\"ForeignAddr\":\"213.202.233.104\",\"ForeignPort\":13939,"
+        "\"LocalAddr\":\"192.168.1.5\",\"LocalPort\":3389,\"PID\":1248,"
+        "\"State\":\"ESTABLISHED\"}'\n"
+        "  • `captured_at`: ISO-8601 timestamp of the row if the plugin "
+        "    provides one, OR the time you ran the tool.\n\n"
         "**Do NOT reply DONE without first invoking the mandatory tool "
         "sequence above** — a reply of 'DONE' with zero finding_record "
         "calls is a doctrine violation. After the tool sequence completes, "
@@ -275,6 +333,11 @@ def run(state: IncidentState) -> IncidentState:
             state["_rca_complete"] = True
             break
 
+        # Use the team's extracted prompt-builder (see _build_analyze_prompt
+        # below) so the case-brief / prior-findings / OS-directive composition
+        # lives in one testable place. Hermes-style verifier-critique
+        # injection (state["_dissent_lessons"]) and the strict pin-format
+        # guidance were merged INTO _build_analyze_prompt during this merge.
         prompt = _build_analyze_prompt(state, case_dir, iter_num)
         result = invoke_subagent(
             subagent_name=subagent,

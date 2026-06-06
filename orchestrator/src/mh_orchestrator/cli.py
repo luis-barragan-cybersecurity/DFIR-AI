@@ -24,10 +24,31 @@ def _cmd_run(args: argparse.Namespace) -> int:
     state["_output_dir"] = str(output_dir)
     state["_input_dir"] = str(input_dir)
 
+    # ─── start the live TUI dashboard ──────────────────────────────────
+    # Reads the case input dir to build the evidence summary line.
+    from . import tui
+    try:
+        evidence_files = sorted(input_dir.iterdir())
+        total_bytes = sum(f.stat().st_size for f in evidence_files if f.is_file())
+        evidence_summary = (
+            f"{len(evidence_files)} artifact(s) · "
+            f"{tui._human_size(total_bytes)} · "
+            f"{evidence_files[0].name if evidence_files else '—'}"
+        )
+    except OSError:
+        evidence_summary = "(evidence summary unavailable)"
+    tui.start(case_id=args.case_id, evidence_summary=evidence_summary)
+
     # If --recursion-limit not passed, build_graph will honor
     # MH_LG_RECURSION_LIMIT env var, then DEFAULT_RECURSION_LIMIT.
     graph = build_graph(recursion_limit=args.recursion_limit)
-    final = graph.invoke(state)
+    try:
+        final = graph.invoke(state)
+    except Exception:
+        tui.stop(success=False)
+        raise
+    tui.stop(success=True)
+
     print(json.dumps({"incident_id": final["incident_id"],
                       "phase": final["phase"],
                       "nodes": final["_node_history"]}))

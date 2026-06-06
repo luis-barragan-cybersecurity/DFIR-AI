@@ -24,10 +24,65 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 from ..sandbox import assert_input_path
+
+
+def _resolve_volatility_invocation() -> list[str]:
+    """Return the argv prefix to invoke Volatility 3.
+
+    Resolution order (first wins):
+
+    1. ``MH_VOL_BIN`` — explicit path to a ``vol``/``vol3`` binary.
+       Operator escape hatch.
+    2. ``MH_VOLATILITY_PYTHON`` — explicit interpreter; the corresponding
+       ``vol`` script next to it is invoked.
+    3. The ``vol`` console-script alongside the running MCP-server Python.
+       This is always the project venv's vol script — its shebang is
+       irrelevant because we invoke ``sys.executable <vol_script>``
+       explicitly. **Deterministic** — no PATH lookup, no shebang surprise.
+    4. ``shutil.which("vol" | "vol3" | "volatility3")`` — last resort.
+       Subject to the bug this function exists to avoid: PATH can
+       resolve to a ``vol`` whose shebang interpreter lacks volatility3
+       (e.g. Homebrew ``python3.14`` installed after a venv built against
+       ``python3.12``), in which case every plugin call returned an empty
+       CSV with a 74-byte "No module named volatility3" error.
+    """
+    override_bin = os.environ.get("MH_VOL_BIN")
+    if override_bin:
+        return [override_bin]
+    override_py = os.environ.get("MH_VOLATILITY_PYTHON")
+    if override_py:
+        candidate = Path(override_py).parent / "vol"
+        if candidate.exists():
+            return [override_py, str(candidate)]
+    # Primary path — the ``vol`` console-script in the same venv as
+    # sys.executable (the venv Python that bin/mh-mcp-server exec'd).
+    # `volatility3.cli` is a package, not a module with __main__, so
+    # `python -m volatility3` and `python -m volatility3.cli` both fail;
+    # the console-script does `from volatility3.cli import main; main()`
+    # which is the supported entrypoint. Invoking it via sys.executable
+    # bypasses the binary's shebang line entirely — that shebang is
+    # exactly what got us into this mess when an OS Python upgrade
+    # repointed it at a Python without volatility3 installed.
+    here = Path(sys.executable).parent / "vol"
+    if here.exists():
+        try:
+            import importlib.util
+            if importlib.util.find_spec("volatility3") is not None:
+                return [sys.executable, str(here)]
+        except (ImportError, ValueError):
+            pass
+    # Last resort — PATH probe. Subject to the bug this function exists
+    # to avoid; kept for distro installs that don't ship a co-located
+    # python (rare).
+    vol_bin = shutil.which("vol") or shutil.which("vol3") or shutil.which("volatility3")
+    if vol_bin:
+        return [vol_bin]
+    return []
 
 # Plugin allowlist. Anything outside this set is rejected before we ever
 # touch disk. Coverage targets the SIFT-Workstation Volatility 3 surface
@@ -153,17 +208,24 @@ def memory_volatility(
 
     img = assert_input_path(image_path)
 
-    # Volatility 3 is packaged under several CLI names depending on
-    # install method (pip, distro, source). Probe in order of preference.
-    vol_bin = shutil.which("vol") or shutil.which("vol3") or shutil.which("volatility3")
-    if not vol_bin:
+    # Deterministic interpreter resolution — see _resolve_volatility_invocation
+    # for the precedence order. Pre-fix this was a bare `shutil.which("vol")`
+    # which could resolve to a binary whose shebang-bound Python lacked
+    # volatility3 (e.g. when Homebrew installed python3.14 after our venv
+    # was built against python3.12). Every plugin call then returned empty
+    # CSV + a 74-byte "No module named volatility3" error, and the LLM
+    # subagent would spin retrying. See cases/rocba-memory regression.
+    invocation = _resolve_volatility_invocation()
+    if not invocation:
         raise MemoryToolError(
-            "vol binary not found on PATH. "
+            "Volatility 3 not resolvable. Tried (in order): "
+            "MH_VOLATILITY_PYTHON, MH_VOL_BIN, sys.executable -m volatility3, "
+            "shutil.which('vol'/'vol3'/'volatility3'). "
             "Install with: pip install '.[forensics]' "
             "(brings volatility3>=2.7.0)."
         )
 
-    cmd: list[str] = [vol_bin, "-f", str(img), "--renderer", "json", plugin]
+    cmd: list[str] = [*invocation, "-f", str(img), "--renderer", "json", plugin]
     if args:
         cmd.extend(args)
 
