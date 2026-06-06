@@ -113,21 +113,34 @@ class SubagentResult:
 
 
 def _resolve_project_dir() -> Path:
-    """Return the project root (MH_HOME) or raise — no silent fallback.
+    """Return the project root.
 
-    `bin/mh run` exports MH_HOME / EVIDENCE_PATH / OUTPUT_PATH / CASE_ID before
-    invoking the orchestrator. If MH_HOME is missing we cannot build the
-    protocol_sift MCP config or resolve `.claude/agents/`, so refuse loudly
-    rather than spawn a tool-less agent that silently produces nothing.
+    Resolution order:
+      1. ``MH_HOME`` env var — set by ``bin/mh run`` and by ``cli._cmd_run``
+         for ``mh-orchestrate run``. Explicit, wins when present.
+      2. Walk up from this module's ``__file__`` looking for a marker that
+         identifies the project root (``.claude/settings.json`` or
+         ``bin/mh-mcp-server``). This is the defensive fallback for tests,
+         direct module use, and the ``mh-orchestrate`` CLI which historically
+         didn't export MH_HOME.
+      3. Raise — refuse to spawn a tool-less subagent that would silently
+         produce nothing.
     """
     mh_home = os.environ.get("MH_HOME")
-    if not mh_home:
-        raise RuntimeError(
-            "MH_HOME not set — invoke_subagent must run under `bin/mh run`, "
-            "which exports MH_HOME/EVIDENCE_PATH/OUTPUT_PATH/CASE_ID. Refusing "
-            "to spawn a subagent with no protocol_sift MCP config.",
-        )
-    return Path(mh_home)
+    if mh_home:
+        return Path(mh_home)
+    # Walk up from this file looking for an MH project root marker.
+    candidate = Path(__file__).resolve()
+    for parent in (candidate, *candidate.parents):
+        if (parent / ".claude" / "settings.json").exists() and \
+                (parent / "bin" / "mh-mcp-server").exists():
+            return parent
+    raise RuntimeError(
+        "MH_HOME not set and could not auto-derive project root — "
+        "invoke_subagent must run under `bin/mh run` or `mh-orchestrate run` "
+        "(both export MH_HOME). Refusing to spawn a subagent with no "
+        "protocol_sift MCP config.",
+    )
 
 
 def _write_mcp_config(project_dir: Path, dest_dir: Path) -> Path:
