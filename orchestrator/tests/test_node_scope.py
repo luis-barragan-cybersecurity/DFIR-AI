@@ -90,6 +90,7 @@ def test_compute_scope_handles_empty_findings(tmp_path: Path) -> None:
         "affected_users": [],
         "affected_services": [],
         "affected_data": [],
+        "egress_destinations": [],
     }
 
 

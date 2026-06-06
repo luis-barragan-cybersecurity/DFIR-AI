@@ -88,7 +88,12 @@ def invoke_subagent(
     headless: bool = True,
     timeout_sec: int = 600,
 ) -> SubagentResult:
-    """Invoke a named Claude Code subagent. Returns parsed stream-json messages."""
+    """Invoke a named Claude Code subagent. Returns parsed stream-json messages.
+
+    Side effect: emits live-action signals to ``tui`` when present (TUI is
+    a no-op singleton when MH_QUIET=1, so this is safe in tests/CI)."""
+    from . import tui
+
     argv: list[str] = ["claude"]
     if headless:
         argv += ["-p", "--output-format", "stream-json", "--verbose"]
@@ -97,6 +102,11 @@ def invoke_subagent(
     if allowed_tools:
         argv += ["--allowedTools", ",".join(allowed_tools)]
     full_prompt = f"Use the {subagent_name} subagent. {prompt}"
+
+    tui.update_state(subagent=subagent_name)
+    tui.now(f"{subagent_name} · spawning claude -p subprocess",
+            f"timeout {timeout_sec}s · allowed tools: {len(allowed_tools)}")
+
     proc = subprocess.run(
         argv,
         input=full_prompt,
@@ -118,6 +128,13 @@ def invoke_subagent(
             except json.JSONDecodeError:
                 continue
             parsed.append(msg)
+            # Mirror notable events into the TUI's NOW area so the demo
+            # video shows tool calls happening in real time. Best-effort
+            # only — never break on a malformed message.
+            try:
+                _tui_mirror(tui, subagent_name, msg)
+            except Exception:  # noqa: BLE001
+                pass
             if msg.get("type") == "result" and msg.get("subtype") == "success":
                 final_text = msg.get("result", "") or ""
 
@@ -145,3 +162,60 @@ def invoke_subagent(
         parsed_messages=parsed,
         final_text=final_text,
     )
+
+
+def _tui_mirror(tui_mod, subagent_name: str, msg: dict[str, Any]) -> None:
+    """Translate one stream-json message into a TUI NOW update.
+
+    stream-json schema (relevant subset):
+      {type: "system", subtype: "init"}                 → handshake done
+      {type: "assistant", message: {content: [...]}}   → model spoke or
+                                                          called a tool
+      {type: "user", message: {content: [tool_result]}}→ tool returned
+      {type: "result", subtype: "success"|"error"}     → run complete
+    """
+    t = msg.get("type")
+    if t == "system" and msg.get("subtype") == "init":
+        tui_mod.now(f"{subagent_name} · session initialized",
+                    "subagent loaded · ready for tool calls")
+        return
+    if t == "assistant":
+        content = (msg.get("message") or {}).get("content") or []
+        for block in content:
+            btype = block.get("type")
+            if btype == "tool_use":
+                tool = block.get("name", "?")
+                inputs = block.get("input") or {}
+                # First non-trivial value is usually the most informative
+                # (path / plugin / query). Truncated for screen width.
+                argv_summary = " · ".join(
+                    f"{k}={str(v)[:40]}" for k, v in list(inputs.items())[:2]
+                )
+                tui_mod.now(
+                    f"{subagent_name} · calling {tool}",
+                    argv_summary or "(no args)",
+                )
+                return
+            if btype == "text":
+                snippet = (block.get("text") or "").strip().splitlines()
+                if snippet:
+                    tui_mod.now(
+                        f"{subagent_name} · model speaking",
+                        snippet[0][:80],
+                    )
+                    return
+    elif t == "user":
+        content = (msg.get("message") or {}).get("content") or []
+        for block in content:
+            if block.get("type") == "tool_result":
+                is_error = block.get("is_error", False)
+                tui_mod.now(
+                    f"{subagent_name} · tool returned"
+                    + (" (ERROR)" if is_error else ""),
+                    "processing result",
+                )
+                return
+    elif t == "result":
+        sub = msg.get("subtype", "")
+        tui_mod.now(f"{subagent_name} · result · {sub}",
+                    "subagent finished")

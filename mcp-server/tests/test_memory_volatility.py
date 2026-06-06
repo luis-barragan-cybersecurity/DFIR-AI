@@ -74,7 +74,7 @@ def test_subprocess_invoked_with_correct_args() -> None:
     fake.stdout = "[]"
     fake.stderr = ""
     with (
-        patch("protocol_sift_mcp.tools.memory.shutil.which", return_value="/usr/bin/vol"),
+        patch("protocol_sift_mcp.tools.memory._resolve_volatility_invocation", return_value=["/usr/bin/vol"]),
         patch("protocol_sift_mcp.tools.memory.subprocess.run", return_value=fake) as mock_run,
     ):
         memory_volatility(str(img), "windows.pslist")
@@ -96,7 +96,7 @@ def test_nonzero_exit_raises_memory_tool_error() -> None:
     fake.stdout = ""
     fake.stderr = "Volatility framework error: invalid image"
     with (
-        patch("protocol_sift_mcp.tools.memory.shutil.which", return_value="/usr/bin/vol"),
+        patch("protocol_sift_mcp.tools.memory._resolve_volatility_invocation", return_value=["/usr/bin/vol"]),
         patch("protocol_sift_mcp.tools.memory.subprocess.run", return_value=fake),
     ):
         with pytest.raises(MemoryToolError, match="invalid image"):
@@ -116,7 +116,7 @@ def test_happy_path_parses_json() -> None:
     )
     fake.stderr = ""
     with (
-        patch("protocol_sift_mcp.tools.memory.shutil.which", return_value="/usr/bin/vol"),
+        patch("protocol_sift_mcp.tools.memory._resolve_volatility_invocation", return_value=["/usr/bin/vol"]),
         patch("protocol_sift_mcp.tools.memory.subprocess.run", return_value=fake),
     ):
         result = memory_volatility(str(img), "windows.pslist")
@@ -128,11 +128,83 @@ def test_happy_path_parses_json() -> None:
 
 
 def test_vol_missing_raises_with_install_hint() -> None:
-    """When vol is not on PATH, MemoryToolError mentions the forensics extras."""
+    """When the resolver finds no vol invocation, MemoryToolError mentions
+    the forensics extras + lists what was tried."""
     img = _make_image()
-    with patch("protocol_sift_mcp.tools.memory.shutil.which", return_value=None):
-        with pytest.raises(MemoryToolError, match="vol.*not found|forensics"):
+    with patch("protocol_sift_mcp.tools.memory._resolve_volatility_invocation",
+               return_value=[]):
+        with pytest.raises(MemoryToolError, match="not resolvable|forensics"):
             memory_volatility(str(img), "windows.pslist")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# _resolve_volatility_invocation — interpreter-resolution discipline
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Pre-fix this was a bare `shutil.which("vol")` which on a real system
+# could resolve to a binary whose shebang Python lacked volatility3 (e.g.
+# Homebrew python3.14 installed after a venv built against python3.12).
+# Every plugin call then returned empty CSV + a 74-byte "No module named
+# volatility3" error and the LLM subagent retried indefinitely. These
+# tests pin the deterministic-resolution contract.
+
+
+def test_resolver_honors_mh_vol_bin_env_override(monkeypatch) -> None:
+    from protocol_sift_mcp.tools.memory import _resolve_volatility_invocation
+    monkeypatch.setenv("MH_VOL_BIN", "/custom/vol")
+    monkeypatch.delenv("MH_VOLATILITY_PYTHON", raising=False)
+    assert _resolve_volatility_invocation() == ["/custom/vol"]
+
+
+def test_resolver_honors_mh_volatility_python_env_override(monkeypatch, tmp_path) -> None:
+    """When MH_VOLATILITY_PYTHON is set, the resolver invokes the vol
+    script alongside that interpreter."""
+    from protocol_sift_mcp.tools.memory import _resolve_volatility_invocation
+    fake_py = tmp_path / "bin" / "python"
+    fake_vol = tmp_path / "bin" / "vol"
+    fake_py.parent.mkdir(parents=True)
+    fake_py.touch()
+    fake_vol.touch()
+    monkeypatch.delenv("MH_VOL_BIN", raising=False)
+    monkeypatch.setenv("MH_VOLATILITY_PYTHON", str(fake_py))
+    invocation = _resolve_volatility_invocation()
+    assert invocation == [str(fake_py), str(fake_vol)]
+
+
+def test_resolver_prefers_venv_vol_script_when_volatility3_importable(monkeypatch) -> None:
+    """Default path on a properly-installed system: resolver invokes the
+    `vol` console-script alongside sys.executable. This is the path that
+    fixes the rocba-memory regression."""
+    import sys
+    from pathlib import Path
+    from protocol_sift_mcp.tools.memory import _resolve_volatility_invocation
+    monkeypatch.delenv("MH_VOL_BIN", raising=False)
+    monkeypatch.delenv("MH_VOLATILITY_PYTHON", raising=False)
+    expected_vol = Path(sys.executable).parent / "vol"
+    if not expected_vol.exists():
+        pytest.skip(
+            "venv has no vol script — skipping (this test asserts the "
+            "happy path on a fully-installed dev env)"
+        )
+    invocation = _resolve_volatility_invocation()
+    assert invocation == [sys.executable, str(expected_vol)], (
+        f"resolver did not pick venv vol; got {invocation}"
+    )
+
+
+def test_resolver_falls_back_to_path_when_venv_vol_missing(monkeypatch) -> None:
+    """If the venv has no vol script (e.g. forensics extras not installed),
+    fall back to PATH probe — but the docstring warns this is risky."""
+    from protocol_sift_mcp.tools.memory import _resolve_volatility_invocation
+    monkeypatch.delenv("MH_VOL_BIN", raising=False)
+    monkeypatch.delenv("MH_VOLATILITY_PYTHON", raising=False)
+    # Force the venv-side branch to fail by claiming volatility3 isn't
+    # importable.
+    with patch("importlib.util.find_spec", return_value=None), \
+         patch("protocol_sift_mcp.tools.memory.shutil.which",
+               side_effect=lambda name: "/usr/bin/vol" if name == "vol" else None):
+        invocation = _resolve_volatility_invocation()
+    assert invocation == ["/usr/bin/vol"]
 
 
 def test_allowlist_constants_complete() -> None:

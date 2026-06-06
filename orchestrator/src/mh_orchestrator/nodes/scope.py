@@ -67,6 +67,31 @@ _DATA_PATH_PATTERNS = [
     re.compile(r"\b([A-Za-z]:\\(?:[A-Za-z0-9 _.\-]+\\?)+)"),
 ]
 
+# OS-default / runtime paths that almost never indicate exposed data.
+# Filtering them prevents the exec-report from inflating "data locations"
+# counts with every /usr/lib/* or /etc/* string that happens to appear in
+# a finding's claim or raw_excerpt.
+_DATA_PATH_NOISE_PREFIXES: tuple[str, ...] = (
+    "/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/",
+    "/etc/", "/proc/", "/sys/", "/dev/", "/run/",
+    "/var/lib/", "/var/log/", "/var/run/", "/var/cache/",
+    "/private/var/", "/Library/", "/System/",
+    "/opt/homebrew/", "/opt/local/",
+    "/Applications/",
+    "C:\\Windows\\", "C:\\Program Files\\", "C:\\Program Files (x86)\\",
+)
+
+# IOC contexts that indicate a *destination* IP (where data went / where C2
+# called out to) rather than a *victim host* (an asset under our control).
+# Lumping these together is the bug that put 219.93.175.67 (the exfil proxy
+# in the DFRWS 2008 case) into "affected_hosts" — leadership reads it as
+# "we own this box", which is the opposite of true.
+_EGRESS_IOC_CONTEXT_KEYWORDS: tuple[str, ...] = (
+    "egress", "outbound", "proxy", "exfil", "c2",
+    "command-and-control", "command and control",
+    "destination", "remote",
+)
+
 
 def _scan(text: str, patterns: list[re.Pattern]) -> set[str]:
     """Apply each pattern to text, return a flat set of group(1) hits."""
@@ -83,6 +108,31 @@ def _scan(text: str, patterns: list[re.Pattern]) -> set[str]:
     return out
 
 
+def _ioc_destinations(finding: dict) -> set[str]:
+    """Pull IPs that the finding's structured `ioc[]` block marks as
+    destinations (egress, outbound proxy, C2, exfil). These are not
+    victim hosts — they're where data went, where the implant called.
+    """
+    out: set[str] = set()
+    for ioc in finding.get("ioc", []) or []:
+        if not isinstance(ioc, dict):
+            continue
+        if ioc.get("type") != "ip":
+            continue
+        ctx = (ioc.get("context") or "").lower()
+        if any(k in ctx for k in _EGRESS_IOC_CONTEXT_KEYWORDS):
+            v = ioc.get("value")
+            if v:
+                out.add(str(v).strip())
+    return out
+
+
+def _is_noise_path(path: str) -> bool:
+    """True if `path` is an OS-default location that shouldn't count as
+    an exposed-data location."""
+    return any(path.startswith(prefix) for prefix in _DATA_PATH_NOISE_PREFIXES)
+
+
 def _extract_from_finding(finding: dict) -> dict[str, set[str]]:
     """Pull entity hits from a single finding (claim + every pin's
     raw_excerpt + locator value).
@@ -91,15 +141,40 @@ def _extract_from_finding(finding: dict) -> dict[str, set[str]]:
     for pin in finding.get("pins", []) or []:
         text_parts.append(pin.get("raw_excerpt", "") or "")
         loc = pin.get("locator") or {}
-        text_parts.append(str(loc.get("value", "") or ""))
+        if isinstance(loc, dict):
+            text_parts.append(str(loc.get("value", "") or ""))
+        else:
+            text_parts.append(str(loc or ""))
         text_parts.append(pin.get("artifact", "") or "")
     blob = "\n".join(text_parts)
+    destinations = _ioc_destinations(finding)
+    # Hosts scraped from the blob are candidates; subtract anything the
+    # finding *explicitly* labeled a destination via ioc[].context.
+    raw_hosts = _scan(blob, _HOST_PATTERNS) - destinations
+    raw_data = _scan(blob, _DATA_PATH_PATTERNS)
+    filtered_data = {p for p in raw_data if not _is_noise_path(p)}
     return {
         "users": _scan(blob, _USER_PATTERNS),
-        "hosts": _scan(blob, _HOST_PATTERNS),
+        "hosts": raw_hosts,
+        "destinations": destinations,
         "services": _scan(blob, _SERVICE_PATTERNS),
-        "data": _scan(blob, _DATA_PATH_PATTERNS),
+        "data": filtered_data,
     }
+
+
+# English-noun false positives the user regex catches in prose. Anything
+# that looks like a username but is actually a generic word in finding
+# claim text (e.g. "user directories are direct indicators of attack" →
+# "directories" is NOT a username). Keep this small and conservative —
+# only add words observed to false-fire across real cases.
+_USER_DENYLIST: frozenset[str] = frozenset({
+    "directories", "directory", "accounts", "account",
+    "credentials", "credential", "session", "sessions",
+    "name", "names", "agent", "agents", "data",
+    "input", "output", "files", "file", "activity",
+    "context", "process", "processes", "id", "ids",
+    "level", "mode", "type", "interaction",
+})
 
 
 def _normalize_user(raw: str) -> str:
@@ -112,28 +187,47 @@ def _normalize_user(raw: str) -> str:
         return raw.split("\\", 1)[1]
     if raw.isdigit():
         return f"sessionid:{raw}"
+    if raw.lower() in _USER_DENYLIST:
+        return ""  # filtered downstream by `if h` in compute_scope's sorted()
     return raw
 
 
 def compute_scope(state: IncidentState) -> dict[str, list[str]]:
-    """Return the four scope buckets without mutating state.
+    """Return the scope buckets without mutating state.
 
     Exposed so tests + the exec report can compute scope from any state
     snapshot, including post-hoc against a finished case.
+
+    Buckets:
+        - affected_hosts: victim hosts the incident touched
+        - affected_users: user accounts the incident touched
+        - affected_services: services / processes / persistence units
+        - affected_data: paths that look like exposed data (OS-noise filtered)
+        - egress_destinations: IPs the finding's ioc[] flagged as the
+          destination of exfil/C2 (NOT counted as victims — they are where
+          data went, not assets under our control)
     """
     users: set[str] = set()
     hosts: set[str] = set()
     services: set[str] = set()
     data: set[str] = set()
+    destinations: set[str] = set()
 
     for f in state.get("_findings", []) or []:
         hits = _extract_from_finding(f)
         users.update(_normalize_user(u) for u in hits["users"])
         hosts.update(hits["hosts"])
+        destinations.update(hits["destinations"])
         services.update(hits["services"])
         data.update(hits["data"])
 
-    # Forensic artifacts contribute additional data paths.
+    # A host can't also be a destination. If a regex-scraped IP appears in
+    # the destination set (from another finding's ioc context), strip it
+    # from victims so we never double-count.
+    hosts -= destinations
+
+    # Forensic artifacts contribute additional data paths (unfiltered —
+    # these are intentional inputs, not regex hits).
     for art in state.get("forensic_artifacts", []) or []:
         # Artifact may be a dataclass or a serialized dict.
         path = getattr(art, "path", None) or (
@@ -147,6 +241,7 @@ def compute_scope(state: IncidentState) -> dict[str, list[str]]:
         "affected_users": sorted(u for u in users if u),
         "affected_services": sorted(s for s in services if s),
         "affected_data": sorted(d for d in data if d),
+        "egress_destinations": sorted(d for d in destinations if d),
     }
 
 
@@ -163,6 +258,7 @@ def run(state: IncidentState) -> IncidentState:
     state["affected_users"] = scope["affected_users"]
     state["affected_services"] = scope["affected_services"]
     state["affected_data"] = scope["affected_data"]
+    state["egress_destinations"] = scope["egress_destinations"]
 
     # CSF subcategory: scoping satisfies RS.AN-01 (Notifications from detection
     # systems are investigated to determine the source and impact).
@@ -196,6 +292,7 @@ def run(state: IncidentState) -> IncidentState:
             "users": len(scope["affected_users"]),
             "services": len(scope["affected_services"]),
             "data": len(scope["affected_data"]),
+            "egress_destinations": len(scope["egress_destinations"]),
             "findings_scanned": finding_n,
         },
     )

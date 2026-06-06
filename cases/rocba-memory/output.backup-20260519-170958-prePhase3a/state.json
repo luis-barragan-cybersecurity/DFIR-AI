@@ -1,0 +1,10 @@
+{
+  "incident_id": "rocba-memory",
+  "severity": "high",
+  "_detected_os": "windows",
+  "attack_techniques": ["T1021.001", "T1052.001", "T1078", "T1133", "T1530", "T1567.002"],
+  "affected_hosts": ["192.168.1.5", "213.202.233.104", "81.30.144.115"],
+  "affected_users": ["fredr", "frocba"],
+  "affected_services": ["TermService", "UmRdpService", "SessionEnv", "RDPDR", "rdpbus", "tsusbhub", "RdpVideoMiniport", "OneDrive.exe", "GoogleDriveFS.exe", "googledrivesync", "Slack.exe", "iCloudIE.exe", "ApplePhotoStream", "APSDaemon.exe", "MRC.exe", "msedge.exe", "chrome.exe", "explorer.exe"],
+  "affected_data": ["C:\\Users\\fredr\\OneDrive - Stark Research Labs", "C:\\Users\\fredr\\Stark Research Labs\\SRL-Projects - Airwolf", "C:\\Users\\fredr\\Stark Research Labs\\SRL-Projects - Blue Thunder", "C:\\Users\\fredr\\Stark Research Labs\\SRL-Projects - Gunstar", "C:\\Users\\fredr\\Stark Research Labs\\SRL-Projects - Megaforce", "C:\\Users\\fredr\\Stark Research Labs\\Maria Hill - KITT", "C:\\Users\\fredr\\Stark Research Labs\\Maria Hill - WorkingFiles", "C:\\Users\\fredr\\Stark Research Labs\\Timothy Dungan - New Alloy Research"]
+}

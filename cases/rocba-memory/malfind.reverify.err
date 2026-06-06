@@ -1,0 +1,5 @@
+Volatility 3 Framework 2.28.0
+/Users/x00x/Desktop/SANS/memory-hound/.venv/lib/python3.12/site-packages/volatility3/framework/deprecation.py:28: FutureWarning: This API (volatility3.plugins.windows.malware.malfind.Malfind.run) will be removed in the first release after 2026-06-07. This plugin has been renamed, please call volatility3.plugins.windows.malware.malfind.Malfind rather than volatility3.plugins.windows.malfind.Malfind.
+  warnings.warn(
+/Users/x00x/Desktop/SANS/memory-hound/.venv/lib/python3.12/site-packages/volatility3/framework/deprecation.py:105: FutureWarning: This plugin (volatility3.plugins.windows.malfind.Malfind) has been renamed and will be removed in the first release after 2026-06-07. Please ensure all method calls to this plugin are replaced with calls to volatility3.plugins.windows.malware.malfind.Malfind
+  warnings.warn(

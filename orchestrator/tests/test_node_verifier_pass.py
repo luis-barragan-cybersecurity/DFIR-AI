@@ -85,12 +85,20 @@ def test_verifier_pass_marks_rs_an_03(tmp_path: Path) -> None:
     assert "RS.AN-03" in s["csf_subcategories_satisfied"]
 
 
-def test_verifier_pass_sets_phase_analyze(tmp_path: Path) -> None:
-    """Verifier is part of analysis phase per §11.2."""
+def test_verifier_pass_does_not_overwrite_phase(tmp_path: Path) -> None:
+    """Verifier must NOT write state['phase']. Pre-fix it unconditionally
+    set phase='analyze' even when not re-routing for dissent, which
+    rolled the lifecycle backward from 'remediation' to 'analyze' in
+    every clean run. The routing layer (route_after_verifier_pass) and
+    the next node (analyze on re-route / session_finalize on clean)
+    own the phase value now."""
     s = new_state("c")
     s["_output_dir"] = str(tmp_path)
+    s["phase"] = "remediation"  # what the prior node (remediation) set
     s = verifier_pass.run(s)
-    assert s["phase"] == "analyze"
+    assert s["phase"] == "remediation", (
+        "verifier_pass regressed phase; routing layer should own it"
+    )
 
 
 def test_verifier_pass_writes_checkpoint_and_history(tmp_path: Path) -> None:

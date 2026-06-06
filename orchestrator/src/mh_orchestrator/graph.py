@@ -48,10 +48,13 @@ DEFAULT_RECURSION_LIMIT = 50
 # severity is the false-positive path → suppress.
 _SUPPRESS_SEVERITIES = {"informational", "low"}
 
-# RCA loop cap (§11.3 row 2). After 3 analyze iterations we force progress to
-# attack_tag even if `_rca_complete` is still False — analyze itself is
-# responsible for emitting an audit warning when the cap is hit.
-_ANALYZE_ITER_CAP = 3
+# RCA loop cap (§11.3 row 2). After N analyze iterations we force progress
+# to attack_tag even if `_rca_complete` is still False — analyze itself is
+# responsible for emitting an audit warning when the cap is hit. Default
+# bumped 3 → 5 because real-image (rocba 17.7GB) cases routinely tripped
+# the prior cap before surveying all plugin outputs. Env-configurable so
+# ops can scale per case.
+_ANALYZE_ITER_CAP = int(os.environ.get("MH_ANALYZE_MAX_ITER", "5"))
 
 
 def route_after_triage(state: IncidentState) -> str:

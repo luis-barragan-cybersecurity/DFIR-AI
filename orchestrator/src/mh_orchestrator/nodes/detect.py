@@ -99,7 +99,13 @@ def run(state: IncidentState) -> IncidentState:
     from . import emit_message, record_audit  # lazy to avoid circular
 
     out = Path(state["_output_dir"])
-    evidence = os.environ.get("EVIDENCE_PATH", "")
+    # Pre-fix this only checked EVIDENCE_PATH env var, which mh-orchestrate
+    # doesn't set — it puts the case input dir on state["_input_dir"]. So
+    # every orchestrator run got _detected_os="unknown", which propagated
+    # through triage and analyze as "_unknown_os_fallback" audit events
+    # and routed everything to WindowsAgent regardless of the real OS.
+    # Prefer state's path; fall back to env for legacy callers.
+    evidence = state.get("_input_dir") or os.environ.get("EVIDENCE_PATH", "")
     detected = _detect_os_from_evidence(evidence) if evidence else "unknown"
     state["_detected_os"] = detected
     state["phase"] = "triage"

@@ -20,7 +20,13 @@ from ..persistence import append_history, write_checkpoint
 from ..state import IncidentState
 
 NODE_NAME = "analyze"
-MAX_ITER = 3
+# RCA iteration cap. Was hardcoded at 3, which on large memory images
+# (rocba-memory 17.7GB) routinely tripped before the subagent finished
+# surveying all plugin outputs — left "analyze_iter_cap_reached" in the
+# audit log and ~10 documented IOCs unsurfaced. Env-configurable so ops
+# can scale with case size without code change.
+import os as _os_mod  # noqa: E402
+MAX_ITER = int(_os_mod.environ.get("MH_ANALYZE_MAX_ITER", "5"))
 
 # Map _detected_os → subagent name (mirrors triage.OS_TO_SUBAGENT).
 # memory_dump intentionally routes to WindowsAgent — the agent's prompt
@@ -177,6 +183,39 @@ def run(state: IncidentState) -> IncidentState:
                 "then proceed to the next.\n\n"
             )
 
+        # ─── Hermes-style self-correction: inject prior-iteration ──────
+        # ─── verifier critiques as structured lessons the next pass ────
+        # ─── must address by finding_id. Built from state["_dissent_  ──
+        # ─── lessons"] populated by verifier_pass on re-route. Empty   ──
+        # ─── on the FIRST analyze iteration (no prior verifier pass).  ──
+        lessons = state.get("_dissent_lessons") or []
+        lessons_section = ""
+        if lessons:
+            lesson_lines = []
+            for L in lessons[:20]:  # cap lines for prompt-budget safety
+                fid = L.get("finding_id", "?")
+                verdict = L.get("verdict", "?")
+                says = (L.get("verifier_says") or "")[:500]
+                lesson_lines.append(
+                    f"- {fid} (verdict: {verdict}): {says}"
+                )
+            lessons_section = (
+                "=== VERIFIER CRITIQUES FROM PRIOR ITERATION — YOU MUST ADDRESS ===\n"
+                "A previous analyze pass produced findings. The independent "
+                "Verifier subagent re-ran each finding's cited tool and "
+                "disagreed on the items below. For each, EITHER:\n"
+                "  (a) re-record the finding with the issue corrected (better pin, "
+                "      clearer rationale, fixed confidence), or\n"
+                "  (b) explicitly retract it by recording a new finding with "
+                "      confidence='unknown' explaining why the prior claim couldn't "
+                "      be substantiated.\n\n"
+                "Do not silently re-emit the same claim — the Verifier will "
+                "dissent again and we will burn another loop iteration.\n\n"
+                "Critiques to address:\n"
+                + "\n".join(lesson_lines) + "\n"
+                "=== END VERIFIER CRITIQUES ===\n\n"
+            )
+
         prompt = (
             f"Case: {case_dir.name}\n"
             f"Detected OS: {detected_os}\n"
@@ -184,6 +223,7 @@ def run(state: IncidentState) -> IncidentState:
             f"Iteration: {iter_num}\n\n"
             f"Evidence files under {evidence_dir}/:\n{evidence_listing}\n\n"
             f"{case_brief_section}"
+            f"{lessons_section}"
             f"{os_specific_directive}"
             "Analyze the evidence for root cause and IOCs. Use the per-OS "
             "MCP forensic tools available to you (e.g., mcp__protocol_sift__"
@@ -193,6 +233,26 @@ def run(state: IncidentState) -> IncidentState:
             "finding via mcp__protocol_sift__finding_record with: claim, "
             "confidence, confidence_rationale (one sentence in the form "
             "'X because Y' justifying the chosen confidence), and >=1 pin. "
+            "\n\n"
+            "**Pin format — STRICT (Verifier re-runs your tools and compares "
+            "byte-for-byte; sloppy pins → dissent → another loop iteration):**\n"
+            "  • `artifact`: the evidence filename (e.g. `Rocba-Memory.raw`), "
+            "    NOT a paraphrase or summary.\n"
+            "  • `tool`: the exact MCP tool name that produced the row "
+            "    (e.g. `windows.netscan`, `windows.pslist`).\n"
+            "  • `locator`: a structured locator the Verifier can use to "
+            "    re-fetch the same row — for Volatility plugins use "
+            "    `{type: \"vol_row\", value: \"<plugin>:<row_key>\"}` where "
+            "    row_key is PID, offset, or another unique field from the row.\n"
+            "  • `raw_excerpt`: the FULL JSON row from the plugin output, "
+            "    quoted VERBATIM (not a key=value summary). Example:\n"
+            "      raw_excerpt: '{\"Created\":\"2020-11-16T02:36:14+00:00\","
+            "\"ForeignAddr\":\"213.202.233.104\",\"ForeignPort\":13939,"
+            "\"LocalAddr\":\"192.168.1.5\",\"LocalPort\":3389,\"PID\":1248,"
+            "\"State\":\"ESTABLISHED\"}'\n"
+            "  • `captured_at`: ISO-8601 timestamp of the row if the plugin "
+            "    provides one, OR the time you ran the tool.\n"
+            "\n"
             "Tag MITRE ATT&CK techniques (T####) in the claim text where "
             "relevant. **Do NOT reply DONE without first invoking the "
             "mandatory tool sequence above** — a reply of 'DONE' with zero "
@@ -200,15 +260,31 @@ def run(state: IncidentState) -> IncidentState:
             "sequence completes, reply with one line summarizing: DONE "
             "(<N> findings recorded, <M> gaps acknowledged)."
         )
-        result = invoke_subagent(
-            subagent_name=subagent,
-            prompt=prompt,
-            case_dir=case_dir,
-            allowed_tools=ALLOWED_TOOLS,
-            mcp_config_path=None,
-            headless=True,
-            timeout_sec=1200,
-        )
+        import os as _os
+        import subprocess as _subprocess
+        try:
+            result = invoke_subagent(
+                subagent_name=subagent,
+                prompt=prompt,
+                case_dir=case_dir,
+                allowed_tools=ALLOWED_TOOLS,
+                mcp_config_path=None,
+                headless=True,
+                timeout_sec=int(_os.environ.get("MH_ANALYZE_TIMEOUT_SEC", "1800")),
+            )
+        except _subprocess.TimeoutExpired:
+            # Treat hang same as non-zero exit: record + raise. This is a
+            # genuine failure mode (analyze is doing the real work) so we
+            # do NOT degrade silently — let the caller decide whether to
+            # retry. RCA cap (_analyze_iter) prevents infinite loops.
+            record_audit(
+                state, event="analyze_subagent_timeout",
+                data={"subagent": subagent, "iter": iter_num,
+                      "note": "subagent did not return within timeout — see MH_ANALYZE_TIMEOUT_SEC"},
+            )
+            raise RuntimeError(
+                f"analyze subagent {subagent!r} timed out at iter {iter_num}"
+            )
         if result.exit_code != 0:
             record_audit(
                 state, event="analyze_subagent_failed",

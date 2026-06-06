@@ -107,9 +107,14 @@ def _print_status(symbol: str, color: str, node_name: str, suffix: str = "") -> 
 
 
 def _wrap_with_progress(node_name: str, fn: Callable[[IncidentState], IncidentState]) -> Callable[[IncidentState], IncidentState]:
-    """Wrap a node callable so it emits enter/exit/error lines to stderr."""
+    """Wrap a node callable so it emits per-node start/end signals to
+    both the legacy line printer (for log scrapers) and the live TUI
+    dashboard (for human eyeballs / demo recording)."""
+    from .. import tui as _tui
+
     def wrapped(state: IncidentState) -> IncidentState:
         _print_status("▶", _CYAN, node_name, "(starting)")
+        _tui.node_start(node_name)
         start = time.monotonic()
         stop_heartbeat = threading.Event()
         heartbeat_thread: threading.Thread | None = None
@@ -120,6 +125,10 @@ def _wrap_with_progress(node_name: str, fn: Callable[[IncidentState], IncidentSt
                 while not stop_heartbeat.wait(_HEARTBEAT_SEC):
                     elapsed = _fmt_duration(time.monotonic() - start)
                     _print_status("⋯", _DIM, node_name, f"still running ({elapsed} elapsed)")
+                    # Also nudge the TUI so the elapsed counter in the
+                    # pipeline pane refreshes without an explicit event.
+                    _tui.now(f"{node_name} · still running",
+                             f"elapsed {elapsed}")
             heartbeat_thread = threading.Thread(
                 target=_heartbeat, name=f"mh-heartbeat-{node_name}", daemon=True,
             )
@@ -132,12 +141,20 @@ def _wrap_with_progress(node_name: str, fn: Callable[[IncidentState], IncidentSt
                 heartbeat_thread.join(timeout=1.0)
             elapsed = _fmt_duration(time.monotonic() - start)
             _print_status("✗", _RED, node_name, f"FAILED after {elapsed}: {type(exc).__name__}: {exc}")
+            _tui.node_end(node_name, ok=False, elapsed_s=time.monotonic() - start)
             raise
         stop_heartbeat.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1.0)
         elapsed = _fmt_duration(time.monotonic() - start)
         _print_status("✓", _GREEN, node_name, f"done in {elapsed}")
+        _tui.node_end(node_name, ok=True, elapsed_s=time.monotonic() - start)
+        # Refresh the right-pane state summary from whatever the node
+        # just mutated. Cheap — pure pluck, no IO.
+        try:
+            _tui.update_state(**_tui.derive_state_summary(result))
+        except Exception:  # noqa: BLE001 — TUI must never break the pipeline
+            pass
         return result
     return wrapped
 
