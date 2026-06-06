@@ -57,15 +57,25 @@ bash scripts/install.sh
 
 The installer checks Python 3.11+, checks the `claude` CLI, then runs `bin/mh init` (creates `.venv`, installs deps). It surfaces missing system packages with the exact `brew`/`apt` command to fix them — it never installs anything for you silently.
 
-Once installed, sign in to Claude Code (one-time) and run the quickstart:
+Once installed, pick **any** AI engine — MemoryHound is provider-agnostic:
 
 ```bash
-claude /login                     # Pro/Max subscription (recommended)
-# OR
-export ANTHROPIC_API_KEY=sk-ant-...   # API key
+# 1) Anthropic Claude Code CLI (Pro/Max subscription)  — default if installed
+claude /login
+
+# 2) Anthropic API direct (no Claude Code needed)
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# 3) OpenAI (gpt-4o by default)
+export OPENAI_API_KEY=sk-...
+
+# 4) Ollama — local models, $0/run, air-gapped DFIR
+ollama serve & ollama pull llama3.3   # https://ollama.com
 
 ./bin/mh quickstart               # auth check + stub demo (no tokens spent)
 ```
+
+`./bin/mh run …` auto-detects which provider you have. Set `MH_PROVIDER` (`anthropic-cli` / `anthropic-api` / `openai` / `ollama`) to force one explicitly. The same orchestrator, same `findings.json`, same audit trail — regardless of engine.
 
 After `mh quickstart` finishes, full IR triage is **one command**. Point it at a file, a folder, or an existing case name — it figures out the rest:
 
@@ -86,6 +96,37 @@ After triage:
 ```
 
 > Need a containerized run, a SIFT/Ubuntu host bootstrap with the full forensics toolchain, or the prebuilt image? See [`docs/deployment.md`](docs/deployment.md).
+
+---
+
+## AI Provider Matrix
+
+MemoryHound's MCP forensic tool surface (47 tools across 13 modules) is the substrate; the AI engine driving the subagent loop is swappable. Pick whichever the judge (or shop, or air-gapped lab) has.
+
+| Provider              | `MH_PROVIDER`     | Auth                           | Model default                | Notes                                                       |
+|-----------------------|-------------------|--------------------------------|------------------------------|-------------------------------------------------------------|
+| Anthropic Claude Code | `anthropic-cli`   | `claude /login` or API key     | Claude (via CLI)             | Default; subscription supports interactive TUI.             |
+| Anthropic API direct  | `anthropic-api`   | `ANTHROPIC_API_KEY`            | `claude-sonnet-4-5`          | No Claude Code needed. Override via `MH_ANTHROPIC_MODEL`.   |
+| OpenAI                | `openai`          | `OPENAI_API_KEY`               | `gpt-4o`                     | Function-calling tool loop. Override via `MH_OPENAI_MODEL`. |
+| Ollama (local)        | `ollama`          | none (local daemon)            | `llama3.3`                   | $0/run, air-gapped. Native + text-tag fallback tool calls.  |
+
+Auto-detect order when `MH_PROVIDER` is unset: anthropic-cli > anthropic-api > openai > ollama. Examples:
+
+```bash
+# Air-gapped DFIR with local llama3.3 — no internet, no API keys.
+MH_PROVIDER=ollama OLLAMA_HOST=http://localhost:11434 ./bin/mh run /case/memory.raw
+
+# Use a different Ollama model and force text-tag mode (for models without native tool calling).
+MH_OLLAMA_MODEL=qwen2.5:32b MH_OLLAMA_TOOLS_MODE=text ./bin/mh run /case/memory.raw
+
+# Run via the Anthropic API directly with a custom model.
+MH_PROVIDER=anthropic-api MH_ANTHROPIC_MODEL=claude-opus-4-7 ./bin/mh run /case/memory.raw
+
+# Force OpenAI even if claude is installed.
+MH_PROVIDER=openai ./bin/mh run /case/memory.raw
+```
+
+The orchestrator's per-decision checkpointing, verifier loop, audit trail, framework mapping, and TUI dashboard all work identically across providers.
 
 ---
 

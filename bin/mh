@@ -346,6 +346,18 @@ Volatility memory analysis, Verifier dissent loop, MITRE ATT&CK tagging,
 NIST CSF 2.0 / ISO 27035 / PICERL framework mapping, D3FEND
 countermeasure recommendations, containment + remediation plans,
 investigator narrative, accuracy report, and a sha256-chained audit log.
+
+ENVIRONMENT (AI provider — judges can pick any):
+  MH_PROVIDER          one of: anthropic-cli (default if claude installed),
+                       anthropic-api, openai, ollama. Auto-detects when unset.
+  ANTHROPIC_API_KEY    enables MH_PROVIDER=anthropic-api (direct SDK, no claude CLI needed).
+  OPENAI_API_KEY       enables MH_PROVIDER=openai (gpt-4o by default; MH_OPENAI_MODEL overrides).
+  OLLAMA_HOST          default http://localhost:11434 — enables MH_PROVIDER=ollama
+                       (local llama3.3 by default; MH_OLLAMA_MODEL overrides).
+                       MH_OLLAMA_TOOLS_MODE: auto|native|text (default auto).
+  MH_ANTHROPIC_MODEL   default claude-sonnet-4-5 for anthropic-api.
+  MH_MAX_TOKENS        per-call max_tokens (default 8192).
+  MH_SUBAGENT_IDLE_TIMEOUT_SEC / MH_SUBAGENT_MAX_SEC   600 / 7200 by default.
 EOF
         return 0
     fi
@@ -440,91 +452,121 @@ EOF
         info "    fix:              ./bin/mh init"
         pf_ok=0
     fi
-    if command -v claude >/dev/null 2>&1; then
-        ok "  claude CLI:         $(command -v claude)"
-    else
-        fail "  claude CLI not installed"
-        info "    install:          https://docs.claude.com/en/docs/claude-code/quickstart"
-        pf_ok=0
+    # Provider detection — picks the AI engine that will drive the subagent
+    # loop. Honors MH_PROVIDER if set; otherwise auto-detects (anthropic-cli
+    # → anthropic-api → openai → ollama). Sets the variable so the rest of
+    # preflight knows which auth check to actually run.
+    local active_provider="anthropic-cli"
+    if [[ -x "$MH_PY" ]]; then
+        active_provider="$(PYTHONPATH="${MH_HOME}/orchestrator/src:${MH_HOME}/mcp-server/src" "$MH_PY" - <<'PY' 2>/dev/null || echo anthropic-cli
+from mh_orchestrator.providers.registry import resolve_provider_name
+print(resolve_provider_name())
+PY
+)"
     fi
-    # Eager mode-pick: no API key → default to --interactive.
-    #
-    # Headless mode (`claude -p`, used by the LangGraph orchestrator's
-    # triage/analyze/verifier_pass nodes) bills against the API credit
-    # pool, not the Pro/Max subscription. A subscription-only user has
-    # no realistic way to run LangGraph successfully — they'd hit a
-    # billing error at the first LLM-invoking node. Default to
-    # --interactive immediately so the TUI path (which DOES use the
-    # subscription bucket) is what runs.
-    #
-    # Override: if the user is sure their key/credits work and wants the
-    # full LangGraph pipeline, they can set ANTHROPIC_API_KEY explicitly
-    # and re-run.
-    if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && (( interactive == 0 )); then
-        info "  no ANTHROPIC_API_KEY in env — defaulting to --interactive"
-        info "                                (subscription path; bills against Pro/Max plan,"
-        info "                                 no API credits needed; skill-driven Claude TUI)"
-        interactive=1
-    fi
-
-    # Claude auth: format check + live API probe (Tier A + Tier C). Costs
-    # ≈ $0.0000004 per `mh run` in API-key mode (one claude-haiku-4-5 call
-    # at max_tokens=1). Subscription mode pings via `claude -p` instead.
-    # Live probe is skipped automatically when CLAUDECODE=1 (the row below
-    # will hard-fail in that case anyway). See scripts/check-claude-auth.sh.
-    #
-    # Exit codes interpretation:
-    #   0  all good — proceed in whatever mode the user asked for
-    #   3  auth ok but `claude -p` is billing-gated (recent change: headless
-    #      bills against the API credit pool, not the subscription bucket).
-    #      Auto-switch to --interactive so subscription users can still run
-    #      end-to-end without buying API credits. Skill-driven TUI uses the
-    #      same model + subscription billing.
-    #   else  hard preflight fail
-    info "  claude auth check:"
-    local auth_check_rc=0
-    "${MH_HOME}/scripts/check-claude-auth.sh" --full 2>&1 | sed 's/^/    /' || true
-    auth_check_rc=${PIPESTATUS[0]:-0}
-    case "$auth_check_rc" in
-        0)
-            : # all good
-            ;;
-        3)
-            if (( interactive )); then
-                # User already explicitly asked for interactive — auth check's
-                # signal lines up with their intent; nothing to switch.
-                warn "  headless gated but you already passed --interactive — fine, proceeding"
+    info "  ai provider:        ${active_provider}  (override with MH_PROVIDER)"
+    # Provider-specific preflight: each AI engine has its own gotchas.
+    case "$active_provider" in
+        anthropic-cli)
+            if command -v claude >/dev/null 2>&1; then
+                ok "  claude CLI:         $(command -v claude)"
             else
-                warn "  headless (claude -p) is gated by billing — auto-falling-back to --interactive"
-                info "    why: recent Claude billing change — non-interactive (-p) calls bill"
-                info "         against the API credit pool, not your subscription. Interactive"
-                info "         TUI mode still bills against subscription, same model, same tokens."
-                info "    note: the TUI will open in your terminal — you'll see live tool calls."
-                info "         type /exit when triage is complete (the agent usually exits on its own)."
-                info "    to force headless anyway: top up API credits at"
-                info "         https://console.anthropic.com/billing"
+                fail "  claude CLI not installed (active provider is anthropic-cli)"
+                info "    install:          https://docs.claude.com/en/docs/claude-code/quickstart"
+                info "    or use another provider:"
+                info "                      MH_PROVIDER=anthropic-api  ANTHROPIC_API_KEY=...   ./bin/mh run $case_id"
+                info "                      MH_PROVIDER=openai         OPENAI_API_KEY=...      ./bin/mh run $case_id"
+                info "                      MH_PROVIDER=ollama         OLLAMA_HOST=http://localhost:11434  ./bin/mh run $case_id"
+                pf_ok=0
+            fi
+            # Eager mode-pick: no API key → default to --interactive. The
+            # billing-gate fall-back below only applies to the anthropic-cli
+            # provider; other providers do not interact with claude -p at all.
+            if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && (( interactive == 0 )); then
+                info "  no ANTHROPIC_API_KEY in env — defaulting to --interactive"
+                info "                                (subscription path; bills against Pro/Max plan,"
+                info "                                 no API credits needed; skill-driven Claude TUI)"
                 interactive=1
             fi
+            info "  claude auth check:"
+            local auth_check_rc=0
+            "${MH_HOME}/scripts/check-claude-auth.sh" --full 2>&1 | sed 's/^/    /' || true
+            auth_check_rc=${PIPESTATUS[0]:-0}
+            case "$auth_check_rc" in
+                0) : ;;
+                3)
+                    if (( interactive )); then
+                        warn "  headless gated but you already passed --interactive — fine, proceeding"
+                    else
+                        warn "  headless (claude -p) is gated by billing — auto-falling-back to --interactive"
+                        info "    or switch providers: MH_PROVIDER=anthropic-api / openai / ollama"
+                        interactive=1
+                    fi
+                    ;;
+                *) pf_ok=0 ;;
+            esac
+            if [[ "${CLAUDECODE:-0}" == "1" ]]; then
+                fail "  CLAUDECODE=1 detected — running mh from inside another Claude Code session"
+                info "    why: the triage/analyze/verifier_pass nodes shell out to 'claude -p';"
+                info "         that nested call is blocked when CLAUDECODE=1 and the pipeline"
+                info "         will hang at the first LLM node."
+                info "    fix: run from a plain terminal, OR set MH_PROVIDER=anthropic-api / openai / ollama,"
+                info "         OR for a dry-run with no LLM calls: MH_NO_CLAUDE=1 ./bin/mh run ${case_id}"
+                pf_ok=0
+            else
+                ok "  CLAUDECODE:         unset (nested claude calls will work)"
+            fi
+            ;;
+        anthropic-api)
+            if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+                fail "  ANTHROPIC_API_KEY not set (active provider is anthropic-api)"
+                info "    fix:              export ANTHROPIC_API_KEY=sk-ant-..."
+                pf_ok=0
+            else
+                ok "  ANTHROPIC_API_KEY:  set (anthropic-api provider)"
+            fi
+            if "$MH_PY" -c "import anthropic" 2>/dev/null; then
+                ok "  anthropic SDK:      installed in venv"
+            else
+                fail "  anthropic SDK not in venv"
+                info "    fix:              $MH_PY -m pip install anthropic"
+                pf_ok=0
+            fi
+            ;;
+        openai)
+            if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+                fail "  OPENAI_API_KEY not set (active provider is openai)"
+                info "    fix:              export OPENAI_API_KEY=sk-..."
+                pf_ok=0
+            else
+                ok "  OPENAI_API_KEY:     set (openai provider)"
+            fi
+            if "$MH_PY" -c "import openai" 2>/dev/null; then
+                ok "  openai SDK:         installed in venv"
+            else
+                fail "  openai SDK not in venv"
+                info "    fix:              $MH_PY -m pip install openai"
+                pf_ok=0
+            fi
+            ;;
+        ollama)
+            local ollama_host="${OLLAMA_HOST:-http://localhost:11434}"
+            if curl -sf -o /dev/null -m 2 "${ollama_host}/api/tags" 2>/dev/null; then
+                ok "  ollama daemon:      responding at ${ollama_host}"
+            else
+                fail "  ollama daemon not responding at ${ollama_host}"
+                info "    install:          https://ollama.com/download"
+                info "    start:            ollama serve"
+                info "    pull a model:     ollama pull llama3.3"
+                pf_ok=0
+            fi
+            info "  ollama model:       ${MH_OLLAMA_MODEL:-llama3.3} (override with MH_OLLAMA_MODEL)"
             ;;
         *)
+            fail "  unknown provider '$active_provider' — set MH_PROVIDER to one of: anthropic-cli, anthropic-api, openai, ollama"
             pf_ok=0
             ;;
     esac
-    if [[ "${CLAUDECODE:-0}" == "1" ]]; then
-        fail "  CLAUDECODE=1 detected — running mh from inside another Claude Code session"
-        info "    why this matters: the triage/analyze/verifier_pass nodes shell out to"
-        info "                      'claude -p'; that nested call is blocked when CLAUDECODE=1"
-        info "                      and the pipeline will hang at the first LLM node."
-        info "    fix:              run mh from a plain terminal, OR:"
-        info "                      env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT \\"
-        info "                          -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_SESSION_ID \\"
-        info "                          ./bin/mh run ${case_id}"
-        info "    or for a dry-run with no LLM calls:"
-        info "                      MH_NO_CLAUDE=1 ./bin/mh run ${case_id}"
-        pf_ok=0
-    else
-        ok "  CLAUDECODE:         unset (nested claude calls will work)"
-    fi
     if (( pf_ok == 0 )); then
         fail "preflight failed — fix the ✗ rows above and re-run"
         return 1

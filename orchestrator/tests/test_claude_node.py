@@ -81,9 +81,12 @@ def test_invoke_subagent_fails_loud_without_mh_home(tmp_path, monkeypatch):
     """
     monkeypatch.delenv("MH_HOME", raising=False)
     # Redirect the auto-derive walk to a tmp dir that lacks the project markers
-    # so the resolver falls all the way through to the raise.
+    # so the resolver falls all the way through to the raise. The resolver now
+    # lives in providers/anthropic_cli.py after the multi-provider refactor;
+    # patching the legacy claude_node.__file__ would no-op.
     monkeypatch.setattr(
-        "mh_orchestrator.claude_node.__file__", str(tmp_path / "fake.py"),
+        "mh_orchestrator.providers.anthropic_cli.__file__",
+        str(tmp_path / "fake.py"),
     )
     from mh_orchestrator.claude_node import invoke_subagent
     with pytest.raises(RuntimeError, match="MH_HOME"):
