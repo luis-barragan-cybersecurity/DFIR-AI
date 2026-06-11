@@ -26,6 +26,7 @@ from typing import Any
 
 from .anthropic_cli import _resolve_project_dir, _write_subagent_trace
 from .base import Provider, ProviderToolError, SubagentResult
+from .persona import resolve_persona_path
 from .tool_dispatch import dispatch_tool, mcp_tool_schemas
 
 
@@ -84,11 +85,15 @@ def _strip_frontmatter(md: str) -> str:
 
 
 def _persona(project_dir: Path, subagent_name: str) -> str:
-    persona_path = project_dir / ".claude" / "agents" / f"{subagent_name}.md"
-    if not persona_path.is_file():
+    # Resolve by frontmatter `name:` (mirrors `claude --agent`), not a naive
+    # `<subagent_name>.md` lookup — nodes pass PascalCase ("WindowsAgent")
+    # while the files are kebab-case ("windows-agent.md"). See providers.persona.
+    persona_path = resolve_persona_path(project_dir, subagent_name)
+    if persona_path is None:
         import sys
         print(
-            f"ollama provider: persona file missing at {persona_path}; "
+            f"ollama provider: no persona file for {subagent_name!r} under "
+            f"{project_dir / '.claude' / 'agents'}; "
             "falling back to minimal default system prompt",
             file=sys.stderr,
         )

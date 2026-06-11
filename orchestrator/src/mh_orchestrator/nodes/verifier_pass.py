@@ -448,6 +448,25 @@ def run(state: IncidentState) -> IncidentState:
             }
             for d in non_agree
         ]
+        # Re-open the analyze RCA gate so the re-routed analyze.run actually
+        # dispatches a revision pass. analyze guards its loop with
+        # `while _analyze_iter < MAX_ITER and not _rca_complete`; after the
+        # first pass BOTH conditions are already exhausted (the prior pass set
+        # _rca_complete=True on convergence, or _analyze_iter hit the cap), so
+        # without this reset the re-routed node would no-op and the
+        # _dissent_lessons built above would never be read — the dissent
+        # self-correction edge (graph.route_after_verifier_pass → "analyze")
+        # would be structurally present but functionally dead. Rewind
+        # _analyze_iter to cap-1 so EXACTLY ONE more inner iteration runs,
+        # honoring the "one revision pass is allowed" contract documented on
+        # route_after_verifier_pass, and clear the completion/cap flags so the
+        # honesty-gap markers from the prior pass don't leak into the revision.
+        # MH_ANALYZE_MAX_ITER is the single source of truth shared by
+        # analyze.MAX_ITER and graph._ANALYZE_ITER_CAP.
+        analyze_iter_cap = int(os.environ.get("MH_ANALYZE_MAX_ITER", "5"))
+        state["_rca_complete"] = False
+        state["_rca_capped"] = False
+        state["_analyze_iter"] = max(0, analyze_iter_cap - 1)
 
     # NOTE: do NOT set state["phase"] here. The dissent re-route path
     # (route_after_verifier_pass → "analyze") will trigger analyze.run,
@@ -467,6 +486,11 @@ def run(state: IncidentState) -> IncidentState:
               "converged": converged,
               "cap_reached": cap_reached,
               "next": "correlate" if state["_verifier_complete"] else "analyze",
+              # When re-routing, the analyze gate was reopened to _analyze_iter
+              # so the revision pass actually dispatches — trace it here.
+              "analyze_iter_reset_to": (
+                  None if state["_verifier_complete"] else state["_analyze_iter"]
+              ),
               "advisory_only": True},
     )
     # End-of-loop checkpoint also IO-guarded — disk-full / permission

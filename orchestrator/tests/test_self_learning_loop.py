@@ -136,6 +136,55 @@ def test_verifier_complete_false_when_dissent_present_under_cap(tmp_path: Path,
     assert out["_dissent_lessons"][0]["finding_id"] == "F-002"
 
 
+def test_dissent_reroute_reopens_analyze_gate(tmp_path: Path,
+                                              monkeypatch) -> None:
+    """Regression: a dissent re-route MUST reopen the analyze RCA gate.
+
+    Pre-fix, verifier_pass built _dissent_lessons and set
+    _verifier_complete=False but left _rca_complete=True / _analyze_iter at the
+    cap from the prior pass. The re-routed analyze.run's
+    `while _analyze_iter < MAX_ITER and not _rca_complete` guard was therefore
+    already false, so it no-op'd and the lessons were never consumed — the
+    self-correction edge was structurally present but functionally dead. This
+    pins the reset that makes exactly one revision pass actually dispatch.
+    """
+    monkeypatch.setenv("MH_NO_CLAUDE", "0")
+    monkeypatch.setenv("MH_VERIFIER_MAX_REVISIONS", "3")
+    monkeypatch.setenv("MH_ANALYZE_MAX_ITER", "5")
+    s = _state_with_findings(tmp_path, n=1)
+    # Simulate the state the prior analyze pass left behind: RCA "done" and
+    # the iteration counter exhausted at the cap.
+    s["_rca_complete"] = True
+    s["_rca_capped"] = True
+    s["_analyze_iter"] = 5
+    with patch("mh_orchestrator.nodes.verifier_pass.invoke_subagent",
+               return_value=MagicMock(final_text="## Verdict: **dissent**",
+                                       exit_code=0, timed_out=False)):
+        out = verifier_pass.run(s)
+    # Re-route decided → gate reopened so analyze will dispatch one more pass.
+    assert out["_verifier_complete"] is False
+    assert out["_rca_complete"] is False
+    assert out["_rca_capped"] is False
+    # Rewound to cap-1 so analyze runs EXACTLY ONE more inner iteration.
+    assert out["_analyze_iter"] == 4
+
+
+def test_converged_pass_does_not_reopen_analyze_gate(tmp_path: Path,
+                                                     monkeypatch) -> None:
+    """The complementary invariant: when the verifier converges (all agree),
+    it must NOT rewind the analyze gate — the loop is done, route to correlate.
+    """
+    monkeypatch.setenv("MH_NO_CLAUDE", "1")  # stub → every finding 'agree'
+    s = _state_with_findings(tmp_path, n=2)
+    s["_rca_complete"] = True
+    s["_analyze_iter"] = 3
+    out = verifier_pass.run(s)
+    assert out["_verifier_complete"] is True
+    # Untouched — no revision pass is coming.
+    assert out["_rca_complete"] is True
+    assert out["_analyze_iter"] == 3
+
+
 def test_verifier_complete_true_when_cap_reached(tmp_path: Path,
                                                   monkeypatch) -> None:
     """When _verifier_revision_count is already at the cap and dissent
