@@ -1,0 +1,429 @@
+[
+  {
+    "finding_id": "F-001-os-windows",
+    "claim": "Evidence is a Windows 10 physical memory dump \u2014 windows.pslist parsed 2186 EPROCESS rows including PID 4 (System) PPID 0 with the canonical Windows kernel signature, and windows.svcscan independently parsed 1417 Service Control Manager rows.",
+    "confidence": "confirmed",
+    "confidence_rationale": "confirmed because two independent Windows-only kernel structures parsed correctly: pslist returned PID 4 'System' kernel process (Offset(V) 201816000901312, PPID 0, 197 threads) and svcscan returned 1417 SCM service rows including TermService and UmRdpService.",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.pslist offset_v=201816000901312 PID=4 ImageFileName=System"
+        },
+        "raw_excerpt": "{'CreateTime':'2020-11-11T08:13:00+00:00','ExitTime':null,'ImageFileName':'System','PID':4,'PPID':0,'SessionId':null,'Threads':197,'Offset(V)':201816000901312}",
+        "captured_at": "2026-05-10T04:10:25Z"
+      }
+    ],
+    "mitre_attck": [],
+    "related_findings": [],
+    "recorded_at": "2026-05-10T04:28:00.435201+00:00"
+  },
+  {
+    "finding_id": "F-002-capture-time",
+    "claim": "Memory was captured ~2020-11-16T02:36:35Z (= 2020-11-15 21:36 EST Sunday evening). The latest exit=None EPROCESS CreateTime is 2020-11-16T02:36:35Z (svchost.exe PID 7900) and the SRL IR memory-acquisition tool MRC.exe was launched from 'D:\\\\Tools\\\\MRC.exe' at 2020-11-16T02:31:15Z (PID 29440, parent explorer.exe PID 7464).",
+    "confidence": "confirmed",
+    "confidence_rationale": "confirmed because the capture window is bracketed by two independent EPROCESS structures: pslist row PID=7900 ImageFileName=svchost.exe CreateTime=2020-11-16T02:36:35Z exit=None, and cmdline row PID=29440 Process=MRC.exe Args='D:\\\\Tools\\\\MRC.exe' \u2014 both consistent with the case brief's 'SRL remote IR captured this memory image' narrative.",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.pslist PID=7900 ImageFileName=svchost.exe PPID=828"
+        },
+        "raw_excerpt": "{'CreateTime':'2020-11-16T02:36:35+00:00','ExitTime':null,'ImageFileName':'svchost.exe','PID':7900,'PPID':828,'SessionId':0}",
+        "captured_at": "2026-05-10T04:14:00Z"
+      },
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.cmdline PID=29440 Process=MRC.exe"
+        },
+        "raw_excerpt": "{'PID':29440,'Process':'MRC.exe','Args':'\"D:\\\\Tools\\\\MRC.exe\" '}",
+        "captured_at": "2026-05-10T04:14:37Z"
+      }
+    ],
+    "mitre_attck": [],
+    "related_findings": [],
+    "recorded_at": "2026-05-10T04:28:09.835434+00:00"
+  },
+  {
+    "finding_id": "F-003-rdp-active-foreign",
+    "claim": "At capture time the Surface had four ESTABLISHED inbound RDP (TCP/3389) connections from two foreign IPs to local 192.168.1.5 \u2014 213.202.233.104:45753, 213.202.233.104:40876, 81.30.144.115:51048, 81.30.144.115:5067 \u2014 all owned by svchost.exe PID 1248, which windows.svcscan identifies as TermService (Remote Desktop Services). These IPs are not in the SRL/M365/Dropbox/OneDrive/iCloud/GoogleDrive baseline named in the case brief.",
+    "confidence": "confirmed",
+    "confidence_rationale": "confirmed because the four ESTABLISHED rows in windows.netscan all carry owner=svchost.exe pid=1248, AND windows.svcscan independently confirms PID 1248 hosts the TermService service \u2014 netscan socket-owner pointer and svcscan service-PID mapping are independent in-memory structures (TCP partition table vs ServicesActiveDatabase).",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.netscan State=ESTABLISHED LocalPort=3389 owner=svchost.exe pid=1248"
+        },
+        "raw_excerpt": "[{Created:'2020-11-16T02:34:58Z',Proto:'TCPv4',LocalAddr:'192.168.1.5',LocalPort:3389,ForeignAddr:'213.202.233.104',ForeignPort:45753,Owner:'svchost.exe',PID:1248,State:'ESTABLISHED'},{Created:'2020-11-16T02:34:58Z',Proto:'TCPv4',LocalAddr:'192.168.1.5',LocalPort:3389,ForeignAddr:'81.30.144.115',ForeignPort:51048,Owner:'svchost.exe',PID:1248,State:'ESTABLISHED'},{Created:'2020-11-16T02:34:45Z',Proto:'TCPv4',LocalAddr:'192.168.1.5',LocalPort:3389,ForeignAddr:'81.30.144.115',ForeignPort:5067,Owner:'svchost.exe',PID:1248,State:'ESTABLISHED'},{Created:'2020-11-16T02:35:53Z',Proto:'TCPv4',LocalAddr:'192.168.1.5',LocalPort:3389,ForeignAddr:'213.202.233.104',ForeignPort:40876,Owner:'svchost.exe',PID:1248,State:'ESTABLISHED'}]",
+        "captured_at": "2026-05-10T04:15:42Z"
+      },
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.svcscan Name=TermService PID=1248"
+        },
+        "raw_excerpt": "{'PID':1248,'State':'SERVICE_RUNNING','Start':'SERVICE_DEMAND_START','Name':'TermService','Display':'Remote Desktop Services','Binary':'C:\\\\WINDOWS\\\\System32\\\\svchost.exe -k NetworkService','Dll':'%SystemRoot%\\\\System32\\\\termsrv.dll'}",
+        "captured_at": "2026-05-10T04:14:00Z"
+      }
+    ],
+    "mitre_attck": [
+      "T1021.001",
+      "T1133"
+    ],
+    "related_findings": [],
+    "recorded_at": "2026-05-10T04:28:25.830510+00:00"
+  },
+  {
+    "finding_id": "F-004-rdp-redirect-stack",
+    "claim": "The complete RDP session-redirector stack \u2014 clipboard, drive, and USB redirection \u2014 was active at capture: UmRdpService (PID 1932 'Remote Desktop Services UserMode Port Redirector'), SessionEnv (PID 3108 'Remote Desktop Configuration'), kernel drivers RDPDR ('Remote Desktop Device Redirector Driver'), rdpbus ('Remote Desktop Device Redirector Bus Driver'), tsusbhub ('Remote Desktop USB Hub'), and RdpVideoMiniport. This is precisely the stack required to map a remote drive into the host as \\\\\\\\tsclient\\\\* or to redirect clipboard/USB across the RDP channel.",
+    "confidence": "confirmed",
+    "confidence_rationale": "confirmed because windows.svcscan returns six independent SERVICE_RUNNING rows for the named redirector services and drivers, AND windows.cmdline corroborates PID 1932 with Args 'svchost.exe -k LocalSystemNetworkRestricted -p -s UmRdpService' \u2014 three independent structures (SCM database, EPROCESS PEB Args, kernel driver service tag).",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.svcscan Names=[UmRdpService,SessionEnv,RDPDR,rdpbus,tsusbhub,RdpVideoMiniport]"
+        },
+        "raw_excerpt": "[{Name:'UmRdpService',PID:1932,State:'SERVICE_RUNNING',Display:'Remote Desktop Services UserMode Port Redirector',Binary:'svchost.exe -k LocalSystemNetworkRestricted -p',Dll:'umrdp.dll'},{Name:'SessionEnv',PID:3108,State:'SERVICE_RUNNING',Display:'Remote Desktop Configuration'},{Name:'RDPDR',State:'SERVICE_RUNNING',Display:'Remote Desktop Device Redirector Driver',Binary:'\\\\Driver\\\\RDPDR'},{Name:'rdpbus',State:'SERVICE_RUNNING',Display:'Remote Desktop Device Redirector Bus Driver'},{Name:'tsusbhub',State:'SERVICE_RUNNING',Display:'Remote Desktop USB Hub'},{Name:'RdpVideoMiniport',State:'SERVICE_RUNNING',Display:'Remote Desktop Video Miniport Driver'}]",
+        "captured_at": "2026-05-10T04:14:00Z"
+      },
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.cmdline PID=1932 service=UmRdpService"
+        },
+        "raw_excerpt": "{'PID':1932,'Process':'svchost.exe','Args':'C:\\\\WINDOWS\\\\System32\\\\svchost.exe -k LocalSystemNetworkRestricted -p -s UmRdpService'}",
+        "captured_at": "2026-05-10T04:14:37Z"
+      }
+    ],
+    "mitre_attck": [
+      "T1021.001",
+      "T1052.001"
+    ],
+    "related_findings": [],
+    "recorded_at": "2026-05-10T04:28:39.995138+00:00"
+  },
+  {
+    "finding_id": "F-005-browser-burst-msedge",
+    "claim": "A coordinated msedge.exe burst was launched at 2020-11-14T04:12:49Z (= 2020-11-13 23:12 EST Friday night) by a parent process with PID 22700 \u2014 at minimum 30 child msedge.exe instances were created in session 1 between 04:12:49Z and 04:59:00Z, and they all exited together at 04:59:17Z. This window is exactly the break-in evening described in the case brief.",
+    "confidence": "confirmed",
+    "confidence_rationale": "confirmed because the 30 msedge.exe children appear in both windows.pslist and windows.psscan (independent EPROCESS enumerations) with identical PPID 22700, identical SessionId 1, identical ExitTime 2020-11-14T04:59:17Z, and contiguous CreateTime stamps \u2014 pattern is a Chromium-Edge browser session, not random unrelated processes.",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.pslist ImageFileName=msedge.exe PPID=22700 SessionId=1"
+        },
+        "raw_excerpt": "[{PID:12448,PPID:22700,Name:'msedge.exe',Create:'2020-11-14T04:12:49+00:00',Exit:'2020-11-14T04:59:17+00:00',sess:1},{PID:26980,PPID:22700,Create:'2020-11-14T04:12:50+00:00',Exit:'2020-11-14T04:59:17+00:00',sess:1},{PID:24024,PPID:22700,Create:'2020-11-14T04:14:59+00:00',Exit:'2020-11-14T04:59:17+00:00',sess:1},{PID:27644,PPID:22700,Create:'2020-11-14T04:17:16+00:00',Exit:'2020-11-14T04:59:17+00:00',sess:1},{PID:24300,PPID:22700,Create:'2020-11-14T04:56:52+00:00',Exit:'2020-11-14T04:59:17+00:00',sess:1},{PID:584,PPID:22700,Create:'2020-11-14T04:57:11+00:00',Exit:'2020-11-14T04:59:17+00:00',sess:1},{PID:25988,PPID:22700,Create:'2020-11-14T04:57:13+00:00',Exit:'2020-11-14T04:59:17+00:00',sess:1},'... +22 more rows all PPID=22700 ExitTime=2020-11-14T04:59:17+00:00']",
+        "captured_at": "2026-05-10T04:09:10Z"
+      }
+    ],
+    "mitre_attck": [
+      "T1021.001"
+    ],
+    "related_findings": [
+      "F-003-rdp-active-foreign",
+      "F-007-interactive-logon-marker"
+    ],
+    "recorded_at": "2026-05-10T04:28:56.666064+00:00"
+  },
+  {
+    "finding_id": "F-006-browser-burst-chrome",
+    "claim": "A coordinated chrome.exe burst overlapping the msedge burst was launched at 2020-11-14T04:53:04Z (= 2020-11-13 23:53 EST) by a parent process with PID 24476 \u2014 eight chrome.exe child instances spawned between 04:53:04Z and 04:56:01Z in session 1, all exiting at 04:56:20Z. A third chrome.exe burst (eight instances) followed under PPID 11140 between 05:10:53-05:14:51Z exiting 05:15:25Z. PIDs 22700, 24476, and 11140 are themselves no longer present in pslist or psscan, indicating their EPROCESS structures were freed and overwritten between the burst exit times and capture (~46 hours later).",
+    "confidence": "confirmed",
+    "confidence_rationale": "confirmed because the chrome.exe burst children (PID 16164, 19060, 27736, 1288, 2812, 10500, 28164, 14904) appear in both windows.pslist and windows.psscan with identical PPID 24476, identical SessionId 1, contiguous CreateTime stamps within 3 minutes, and identical ExitTime 2020-11-14T04:56:20Z \u2014 same pattern repeats with PPID 11140 children for the second burst, while PIDs 22700/24476/11140 themselves are absent from both pslist (active list) and psscan (offset scan), consistent with EPROCESS reuse after exit.",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.pslist ImageFileName=chrome.exe PPID=24476 SessionId=1"
+        },
+        "raw_excerpt": "[{PID:16164,PPID:24476,Name:'chrome.exe',Create:'2020-11-14T04:53:04+00:00',Exit:'2020-11-14T04:56:20+00:00',sess:1},{PID:19060,PPID:24476,Create:'2020-11-14T04:53:04+00:00',Exit:'2020-11-14T04:56:20+00:00',sess:1},{PID:27736,PPID:24476,Create:'2020-11-14T04:55:12+00:00',Exit:'2020-11-14T04:56:20+00:00',sess:1},{PID:1288,PPID:24476,Create:'2020-11-14T04:55:12+00:00',Exit:'2020-11-14T04:56:20+00:00',sess:1},{PID:2812,PPID:24476,Create:'2020-11-14T04:55:31+00:00',Exit:'2020-11-14T04:56:20+00:00',sess:1},{PID:10500,PPID:24476,Create:'2020-11-14T04:55:57+00:00',Exit:'2020-11-14T04:56:20+00:00',sess:1},{PID:28164,PPID:24476,Create:'2020-11-14T04:55:57+00:00',Exit:'2020-11-14T04:56:20+00:00',sess:1},{PID:14904,PPID:24476,Create:'2020-11-14T04:56:01+00:00',Exit:'2020-11-14T04:56:20+00:00',sess:1}]",
+        "captured_at": "2026-05-10T04:09:10Z"
+      },
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.pslist ImageFileName=chrome.exe PPID=11140 second-burst SessionId=1"
+        },
+        "raw_excerpt": "[{PID:27916,PPID:11140,Name:'chrome.exe',Create:'2020-11-14T05:10:53+00:00',Exit:'2020-11-14T05:15:25+00:00',sess:1},{PID:24604,PPID:11140,Create:'2020-11-14T05:10:53+00:00',Exit:'2020-11-14T05:15:25+00:00'},{PID:15180,PPID:11140,Create:'2020-11-14T05:10:53+00:00',Exit:'2020-11-14T05:15:25+00:00'},{PID:23492,PPID:11140,Create:'2020-11-14T05:11:05+00:00',Exit:'2020-11-14T05:15:25+00:00'},{PID:16248,PPID:11140,Create:'2020-11-14T05:11:20+00:00',Exit:'2020-11-14T05:15:25+00:00'},{PID:16792,PPID:11140,Create:'2020-11-14T05:11:26+00:00',Exit:'2020-11-14T05:15:25+00:00'},{PID:12984,PPID:11140,Create:'2020-11-14T05:11:41+00:00',Exit:'2020-11-14T05:15:25+00:00'},{PID:15268,PPID:11140,Create:'2020-11-14T05:12:44+00:00',Exit:'2020-11-14T05:15:25+00:00'},{PID:27220,PPID:11140,Create:'2020-11-14T05:14:51+00:00',Exit:'2020-11-14T05:15:25+00:00'}]",
+        "captured_at": "2026-05-10T04:09:10Z"
+      }
+    ],
+    "mitre_attck": [],
+    "related_findings": [
+      "F-005-browser-burst-msedge"
+    ],
+    "recorded_at": "2026-05-10T04:29:15.005195+00:00"
+  },
+  {
+    "finding_id": "F-007-interactive-logon-marker",
+    "claim": "An interactive-session marker fires at 2020-11-14T03:42:50Z (= 2020-11-13 22:42 EST Friday): ctfmon.exe (PID 9488), TabTip.exe (PID 27232), and TextInputHost.exe (PID 26988) start in session 1 with parents 1908 (CTF/winlogon) and 740 (svchost) within 16 seconds of each other. These services start when an interactive Windows session is created or unlocked, and their concurrent start in session 1 indicates a fresh user-input session began at this moment.",
+    "confidence": "inferred",
+    "confidence_rationale": "inferred because the three pslist EPROCESS rows (ctfmon.exe, TabTip.exe, TextInputHost.exe) all start within 16 seconds in session 1 with the well-known Windows logon-handler parent PIDs \u2014 but the registry SECURITY hive that would corroborate Logon EID 4624 is not parseable through the allowlisted memory plugins, so this is single-source memory evidence rather than corroborated event-log evidence.",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.pslist ctfmon+TabTip+TextInputHost session 1 logon marker"
+        },
+        "raw_excerpt": "[{PID:9488,PPID:1908,Name:'ctfmon.exe',Create:'2020-11-14T03:42:50+00:00',Exit:null,sess:1,Args:'\"ctfmon.exe\"'},{PID:27232,PPID:1908,Name:'TabTip.exe',Create:'2020-11-14T03:42:55+00:00',Exit:null,sess:1,Args:'/QuitInfo:00000000000002DC;0000000000000300;'},{PID:26988,PPID:740,Name:'TextInputHost.exe',Create:'2020-11-14T03:43:06+00:00',Exit:null,sess:1,Args:'\"C:\\\\Windows\\\\SystemApps\\\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\\\InputApp\\\\TextInputHost.exe\" -ServerName:InputApp.AppX9j...'}]",
+        "captured_at": "2026-05-10T04:14:37Z"
+      }
+    ],
+    "mitre_attck": [
+      "T1078"
+    ],
+    "related_findings": [
+      "F-005-browser-burst-msedge",
+      "F-006-browser-burst-chrome"
+    ],
+    "recorded_at": "2026-05-10T04:29:29.936294+00:00"
+  },
+  {
+    "finding_id": "F-008-srl-projects-via-onedrive",
+    "claim": "OneDrive (PID 9648, parent 7464=explorer.exe, ImageFileName=OneDrive.exe in session 1) holds open file handles at capture time on the following Stark Research Labs project sync folders under C:\\\\Users\\\\fredr\\\\Stark Research Labs\\\\: 'SRL-Projects - Airwolf', 'SRL-Projects - Blue Thunder', 'SRL-Projects - Gunstar', 'SRL-Projects - Megaforce', 'Maria Hill - KITT', 'Maria Hill - WorkingFiles', and 'Timothy Dungan - New Alloy Research'; plus the corporate root 'OneDrive - Stark Research Labs'. These are the projects Fred Rocba had OneDrive sync access to at the moment of memory capture.",
+    "confidence": "confirmed",
+    "confidence_rationale": "confirmed because the eight directory handles all appear in windows.handles for PID 9648 with Type=File and OneDrive's marker file '.849C9593-D756-4E56-8D6E-42412F2A707B' present in each directory (this GUID is OneDrive's documented placeholder for synced folders), AND windows.netscan independently confirms PID 9648 has ESTABLISHED outbound TLS connections to Microsoft Live (13.107.136.9:443) and Microsoft Teams Cloud (52.114.75.149:443, 52.114.128.43:443, 52.242.211.89:443).",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.handles --pid 9648 Type=File SRL projects"
+        },
+        "raw_excerpt": "[{Type:'File',Name:'\\\\Device\\\\HarddiskVolume3\\\\Users\\\\fredr\\\\OneDrive - Stark Research Labs',PID:9648,Process:'OneDrive.exe'},{Type:'File',Name:'\\\\Device\\\\HarddiskVolume3\\\\Users\\\\fredr\\\\Stark Research Labs\\\\SRL-Projects - Airwolf'},{Type:'File',Name:'\\\\Device\\\\HarddiskVolume3\\\\Users\\\\fredr\\\\Stark Research Labs\\\\SRL-Projects - Blue Thunder'},{Type:'File',Name:'\\\\Device\\\\HarddiskVolume3\\\\Users\\\\fredr\\\\Stark Research Labs\\\\SRL-Projects - Gunstar'},{Type:'File',Name:'\\\\Device\\\\HarddiskVolume3\\\\Users\\\\fredr\\\\Stark Research Labs\\\\SRL-Projects - Megaforce'},{Type:'File',Name:'\\\\Device\\\\HarddiskVolume3\\\\Users\\\\fredr\\\\Stark Research Labs\\\\Maria Hill - KITT'},{Type:'File',Name:'\\\\Device\\\\HarddiskVolume3\\\\Users\\\\fredr\\\\Stark Research Labs\\\\Maria Hill - WorkingFiles'},{Type:'File',Name:'\\\\Device\\\\HarddiskVolume3\\\\Users\\\\fredr\\\\Stark Research Labs\\\\Timothy Dungan - New Alloy Research'}]",
+        "captured_at": "2026-05-10T04:17:31Z"
+      },
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.netscan owner=OneDrive.exe pid=9648 ESTABLISHED"
+        },
+        "raw_excerpt": "[{Created:'2020-11-16T02:32:45Z',Proto:'TCPv4',LocalAddr:'192.168.1.5',LocalPort:61861,ForeignAddr:'13.107.136.9',ForeignPort:443,Owner:'OneDrive.exe',PID:9648},{Created:'2020-11-16T02:32:55Z',ForeignAddr:'52.114.75.149',ForeignPort:443,Owner:'OneDrive.exe',PID:9648},{Created:'2020-11-14T05:40:22Z',ForeignAddr:'52.242.211.89',ForeignPort:443,Owner:'OneDrive.exe',PID:9648},{Created:'2020-11-13T19:56:50Z',ForeignAddr:'52.179.224.121',ForeignPort:443,Owner:'OneDrive.exe',PID:6188}]",
+        "captured_at": "2026-05-10T04:15:42Z"
+      }
+    ],
+    "mitre_attck": [
+      "T1530"
+    ],
+    "related_findings": [],
+    "recorded_at": "2026-05-10T04:29:51.070968+00:00"
+  },
+  {
+    "finding_id": "F-009-cloud-sync-multi-channel",
+    "claim": "A multi-cloud exfiltration surface was active at capture time: GoogleDriveFS.exe (PID 14832 launched 2020-11-14T14:08:58Z, plus googledrivesync PID 8432 holding ESTABLISHED TCP to 172.217.10.42:443 and 172.217.12.170:443), OneDrive.exe (PID 9648, see F-008), Slack.exe (PID 12808 ESTABLISHED to 54.82.161.19:443), iCloudIE.exe (PID 27740 launched 2020-11-16T00:14:48Z), ApplePhotoStream PID 12888 (ESTABLISHED to 17.248.138.42:443), and APSDaemon.exe PID 13224 (ESTABLISHED to Apple Push Service 17.57.144.165:5223). Any of these sync clients could have served as an exfil channel during the intruder window.",
+    "confidence": "confirmed",
+    "confidence_rationale": "confirmed because each cloud client's process appears in windows.pslist with a CreateTime and ImageFileName, AND each has a corresponding ESTABLISHED row in windows.netscan owned by the same PID with a remote-IP/port pair belonging to the documented service ranges (Google 172.217/16, Microsoft Live 13.107/16 and 52.114/16, Apple iCloud 17.0/8, Slack AWS 54.82.x.x).",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.pslist cloud-sync clients"
+        },
+        "raw_excerpt": "[{PID:14832,PPID:12020,Name:'GoogleDriveFS.exe',Create:'2020-11-14T14:08:58+00:00',Exit:null,sess:1},{PID:8432,Name:'googledrivesync',Exit:null},{PID:9648,Name:'OneDrive.exe',sess:1},{PID:12808,Name:'Slack.exe',sess:1},{PID:27740,PPID:11004,Name:'iCloudIE.exe',Create:'2020-11-16T00:14:48+00:00',sess:1,Args:'\"iCloudIE-AppX.exe\"'},{PID:12888,Name:'ApplePhotoStream',sess:1},{PID:13224,Name:'APSDaemon.exe',sess:1}]",
+        "captured_at": "2026-05-10T04:09:10Z"
+      },
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.netscan ESTABLISHED cloud-sync remote IPs"
+        },
+        "raw_excerpt": "[{Created:'2020-11-15T14:09:21Z',Proto:'TCPv4',ForeignAddr:'172.217.12.170',ForeignPort:443,Owner:'GoogleDriveFS.',PID:14832,State:'ESTABLISHED'},{Created:'2020-11-16T00:15:27Z',ForeignAddr:'172.217.10.42',ForeignPort:443,Owner:'googledrivesyn',PID:8432,State:'ESTABLISHED'},{Created:'2020-11-15T20:44:35Z',ForeignAddr:'54.82.161.19',ForeignPort:443,Owner:'Slack.exe',PID:12808,State:'ESTABLISHED'},{Created:'2020-11-16T02:34:26Z',ForeignAddr:'17.248.138.42',ForeignPort:443,Owner:'ApplePhotoStre',PID:12888,State:'ESTABLISHED'},{Created:'2020-11-12T06:06:19Z',ForeignAddr:'17.57.144.165',ForeignPort:5223,Owner:'APSDaemon.exe',PID:13224,State:'ESTABLISHED'}]",
+        "captured_at": "2026-05-10T04:15:42Z"
+      }
+    ],
+    "mitre_attck": [
+      "T1567.002"
+    ],
+    "related_findings": [
+      "F-008-srl-projects-via-onedrive"
+    ],
+    "recorded_at": "2026-05-10T04:30:08.829821+00:00"
+  },
+  {
+    "finding_id": "F-010-no-malicious-injection",
+    "claim": "windows.malfind returned 16 PAGE_EXECUTE_READWRITE / PAGE_EXECUTE_READ regions \u2014 every one of them is in a documented JIT-using legitimate process: MsMpEng.exe (Defender x4), SearchApp.exe (Cortana JIT x4 + 1), dllhost.exe, LockApp.exe, RuntimeBroker.exe, Teams.exe, smartscreen.exe. No injected/hollowed code was detected in non-JIT processes (no injection in browsers, OneDrive, Slack, Teams renderer, GoogleDriveFS, or any system service).",
+    "confidence": "inferred",
+    "confidence_rationale": "inferred because the 16 malfind hits all map to processes with documented JIT compilers (Defender's emulator, Cortana's WinUI/V8, Teams' Electron/V8, SmartScreen's filter), and the disassembly bytes match common stub patterns (cc cc int3 padding, e9 jump trampolines) \u2014 but malfind is one tool and a sufficiently sophisticated rootkit could hide via DKOM or PEB unlinking that pslist/psscan vs offset-scan would not surface.",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.malfind 16 hits all JIT processes"
+        },
+        "raw_excerpt": "[{PID:4864,Process:'MsMpEng.exe',Protection:'PAGE_EXECUTE_READWRITE',Tag:'VadS',CommitCharge:269,StartVPN:2132471382016,Disasm:'56 57 53 55 41 54 41 55 41 56 41 57 48 83 ec 28 4c 8d 3c 24 48 8b e9 ...'},{PID:4864,Process:'MsMpEng.exe',Protection:'PAGE_EXECUTE_READWRITE'},{PID:4864,Process:'MsMpEng.exe'},{PID:4864,Process:'MsMpEng.exe'},{PID:4864,Process:'MsMpEng.exe'},{PID:8748,Process:'dllhost.exe',Protection:'PAGE_EXECUTE_READ'},{PID:8312,Process:'SearchApp.exe',Protection:'PAGE_EXECUTE_READWRITE'},{PID:8312,Process:'SearchApp.exe'},{PID:8312,Process:'SearchApp.exe'},{PID:8312,Process:'SearchApp.exe'},{PID:9788,Process:'LockApp.exe'},{PID:9964,Process:'RuntimeBroker.'},{PID:15636,Process:'Teams.exe'},{PID:19436,Process:'SearchApp.exe'},{PID:19436,Process:'SearchApp.exe'},{PID:19348,Process:'smartscreen.exe'}]",
+        "captured_at": "2026-05-10T04:14:00Z"
+      }
+    ],
+    "mitre_attck": [],
+    "related_findings": [],
+    "recorded_at": "2026-05-10T04:30:27.985316+00:00"
+  },
+  {
+    "finding_id": "F-011-no-shells-spawned",
+    "claim": "No cmd.exe, powershell.exe, pwsh.exe, wsl.exe, or bash.exe processes are present in windows.pslist (2186 rows) or windows.psscan (2196 rows including freed EPROCESS structures). The intruder did not spawn an interactive shell \u2014 activity was confined to GUI processes (msedge.exe, chrome.exe under untracked parents 22700/24476/11140) and explorer.exe.",
+    "confidence": "inferred",
+    "confidence_rationale": "inferred because cross-checking pslist (active EPROCESS list) and psscan (offset-scan including freed structures) both return zero rows whose ImageFileName matches cmd.exe/powershell.exe/pwsh.exe/wsl.exe/bash.exe \u2014 but a shell that exited more than ~46 hours before capture could have its EPROCESS overwritten so absence is not certainty.",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.pslist+psscan filter ImageFileName matches /cmd|powershell|pwsh|wsl|bash/"
+        },
+        "raw_excerpt": "pslist rows=2186 psscan rows=2196 matches=0 (zero EPROCESS entries with ImageFileName in {cmd.exe, powershell.exe, pwsh.exe, wsl.exe, bash.exe})",
+        "captured_at": "2026-05-10T04:09:10Z"
+      }
+    ],
+    "mitre_attck": [],
+    "related_findings": [],
+    "recorded_at": "2026-05-10T04:30:36.043621+00:00"
+  },
+  {
+    "finding_id": "F-012-device-picker-2358-est",
+    "claim": "DevicesFlowUserSvc and DevicePickerUserSvc were spawned at 2020-11-14T04:58:58Z (= 2020-11-13 23:58 EST) \u2014 this is the one-second window before the intruder's msedge browser session ended (04:59:17Z). DevicesFlow/DevicePicker is the Windows shell service that fires when a user opens a 'pick device' UI such as the Bluetooth/USB sharing share-target picker.",
+    "confidence": "uncertain",
+    "confidence_rationale": "uncertain because DevicesFlow/DevicePicker can fire from Cast/Project, Bluetooth share, USB enumeration, or the Edge 'Send to device' menu \u2014 with the parent browser PID gone we cannot prove which trigger fired, only that a device-target picker was invoked one second before the intruder browser session terminated.",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.pslist DevicesFlow+DevicePicker user services session 1"
+        },
+        "raw_excerpt": "[{PID:8244,PPID:828,Name:'svchost.exe',Create:'2020-11-14T04:58:58+00:00',Exit:null,sess:1,Args:'C:\\\\WINDOWS\\\\system32\\\\svchost.exe -k DevicesFlow -s DevicesFlowUserSvc'},{PID:28064,PPID:828,Name:'svchost.exe',Create:'2020-11-14T04:58:58+00:00',Exit:null,sess:1,Args:'C:\\\\WINDOWS\\\\system32\\\\svchost.exe -k DevicesFlow -s DevicePickerUserSvc'}]",
+        "captured_at": "2026-05-10T04:14:37Z"
+      }
+    ],
+    "mitre_attck": [
+      "T1052.001"
+    ],
+    "related_findings": [
+      "F-005-browser-burst-msedge"
+    ],
+    "recorded_at": "2026-05-10T04:30:45.705763+00:00"
+  },
+  {
+    "finding_id": "F-013-mrc-ir-tool-from-d-drive",
+    "claim": "MRC.exe \u2014 a memory-acquisition tool consistent with the SRL remote-IR procedure named in the case brief \u2014 was run from `D:\\\\Tools\\\\MRC.exe` at 2020-11-16T02:31:15Z by parent process explorer.exe (PID 7464, Fred's interactive session). The launching of an interactive (session-1) MRC.exe from a removable drive (D:) that hosts a `\\\\Tools\\\\` subfolder is consistent with an IR responder physically inserting a tools USB into the live machine and double-clicking the binary; it is NOT consistent with a remote-only IR collection.",
+    "confidence": "inferred",
+    "confidence_rationale": "inferred because the cmdline row for PID 29440 shows the exact path `D:\\\\Tools\\\\MRC.exe` and the pslist parent PID is 7464 (explorer.exe in session 1) \u2014 but I cannot independently verify the binary's hash or publisher inside memory, so the assertion that MRC.exe is the IR tool rather than something the intruder dropped on a USB rests on the case-brief context and the parent-PID/session-ID pattern.",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.cmdline + windows.pslist PID=29440 MRC.exe parent=explorer.exe(7464)"
+        },
+        "raw_excerpt": "{'PID':29440,'Process':'MRC.exe','Args':'\"D:\\\\Tools\\\\MRC.exe\" '} + {'PID':29440,'PPID':7464,'ImageFileName':'MRC.exe','Create':'2020-11-16T02:31:15+00:00','sess':1}",
+        "captured_at": "2026-05-10T04:14:37Z"
+      }
+    ],
+    "mitre_attck": [],
+    "related_findings": [],
+    "recorded_at": "2026-05-10T04:30:55.676736+00:00"
+  },
+  {
+    "finding_id": "F-014-gap-no-registry-plugins",
+    "claim": "GAP \u2014 the protocol_sift MCP allowlist contains only 10 Windows Volatility plugins (pslist, psscan, malfind, netscan, lsadump, hashdump, cmdline, dlllist, svcscan, handles); registry-aware plugins (`windows.registry.userassist`, `windows.registry.shellbags`, `windows.registry.amcache`, `windows.registry.printkey`, `windows.registry.hivelist`) are NOT available, so the case-brief's preferred follow-up artifacts \u2014 UserAssist counts of EXE/LNK invocations, ShellBag MRU folders, Amcache.hve recently-executed binaries, and recovered hive paths \u2014 cannot be produced from this triage.",
+    "confidence": "unknown",
+    "confidence_rationale": "unknown because the gap is structural to the tool surface available, not a question of the data: the registry hives ARE in memory (as `\\\\REGISTRY\\\\MACHINE\\\\*` strings appear in handles and svcscan dll-paths), but no allowlisted plugin parses them \u2014 so the question 'what programs did the intruder run interactively' cannot be answered from this evidence at this confidence level.",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "MCP allowlist mcp-server/src/protocol_sift_mcp/tools/memory.py:34-58"
+        },
+        "raw_excerpt": "ALLOWED_PLUGINS frozenset: {windows.pslist, windows.psscan, windows.malfind, windows.netscan, windows.lsadump, windows.hashdump, windows.cmdline, windows.dlllist, windows.svcscan, windows.handles, linux.pslist, linux.bash, linux.malfind, linux.sockstat, mac.pslist, mac.malfind, mac.netstat} \u2014 no registry.* plugins included.",
+        "captured_at": "2026-05-10T04:13:11Z"
+      }
+    ],
+    "mitre_attck": [],
+    "related_findings": [],
+    "recorded_at": "2026-05-10T04:31:06.902513+00:00"
+  },
+  {
+    "finding_id": "F-015-gap-browser-args-unrecoverable",
+    "claim": "GAP \u2014 the actual URLs/tabs visited during the intruder browser bursts (msedge under PID 22700, chrome under PIDs 24476 and 11140) cannot be recovered. The parent processes themselves are absent from both pslist and psscan (their EPROCESS structures were freed and overwritten between the burst exit times \u2014 2020-11-14T04:56:20Z / 04:59:17Z / 05:15:25Z \u2014 and the capture moment ~46 hours later), and the windows.cmdline rows for the children all return Args=null because the renderer subprocesses' PEB.ProcessParameters.CommandLine_UNICODE_STRING was freed at process exit.",
+    "confidence": "unknown",
+    "confidence_rationale": "unknown because the data structure that holds a Windows process command line (RTL_USER_PROCESS_PARAMETERS at PEB+0x60) is reclaimed when the process exits; lacking allowlisted plugins for browser-cache or LNK-scanning we cannot reach the URLs by alternate path \u2014 pinning what we have (process tree shape only) rather than guessing.",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.cmdline rows for chrome.exe/msedge.exe burst children all Args=null + parents PID 22700/24476/11140 absent from pslist+psscan"
+        },
+        "raw_excerpt": "Of 49 chrome.exe + msedge.exe rows in pslist with PPID in {22700,24476,11140}: cmdline returns Args=None for all 49; psscan rows for PID 22700, 24476, 11140 themselves: 0 hits.",
+        "captured_at": "2026-05-10T04:14:37Z"
+      }
+    ],
+    "mitre_attck": [],
+    "related_findings": [],
+    "recorded_at": "2026-05-10T04:31:17.691913+00:00"
+  },
+  {
+    "finding_id": "F-016-rdp-listener-since-boot",
+    "claim": "The Surface has been listening for inbound RDP since boot (2020-11-11T08:13:16Z) on 0.0.0.0:3389 / [::]:3389 (svchost.exe PID 1248, owner of the LISTENING socket per windows.netscan). RDP exposure was therefore present for the entire vacation week 2020-11-11 through 2020-11-13 (the break-in night) and continuously through capture.",
+    "confidence": "confirmed",
+    "confidence_rationale": "confirmed because windows.netscan returns matched LISTENING rows for both TCPv4 0.0.0.0:3389 and TCPv6 [::]:3389 with owner=svchost.exe pid=1248 and Created=2020-11-11T08:13:16+00:00, AND windows.svcscan corroborates PID 1248 hosts TermService \u2014 two independent kernel structures (TCP listener table and SCM registration).",
+    "pins": [
+      {
+        "artifact": "Rocba-Memory.raw",
+        "tool": "mcp__protocol_sift__memory_volatility",
+        "locator": {
+          "type": "memory_vad",
+          "value": "plugin=windows.netscan LISTENING LocalPort=3389 owner=svchost.exe pid=1248"
+        },
+        "raw_excerpt": "[{Created:'2020-11-11T08:13:16+00:00',Proto:'TCPv4',LocalAddr:'0.0.0.0',LocalPort:3389,ForeignAddr:'',ForeignPort:0,Owner:'svchost.exe',PID:1248,State:'LISTENING'},{Created:'2020-11-11T08:13:16+00:00',Proto:'TCPv6',LocalAddr:'::',LocalPort:3389,Owner:'svchost.exe',PID:1248,State:'LISTENING'}]",
+        "captured_at": "2026-05-10T04:15:42Z"
+      }
+    ],
+    "mitre_attck": [
+      "T1133",
+      "T1021.001"
+    ],
+    "related_findings": [],
+    "recorded_at": "2026-05-10T04:31:26.776728+00:00"
+  }
+]

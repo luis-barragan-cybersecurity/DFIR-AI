@@ -72,6 +72,10 @@ chain-of-custody.jsonl
 !corpus/README.md
 !corpus/**/ground-truth.json
 
+# Allow curated, non-sensitive sample output published for the submission
+!output-files/
+!output-files/**
+
 # Build outputs
 *.log
 .cache/

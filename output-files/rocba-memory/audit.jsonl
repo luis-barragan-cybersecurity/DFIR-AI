@@ -1,0 +1,17 @@
+{"data":{"artifact":"Rocba-Memory.raw","case":"rocba-memory","ingested_at":"2026-05-09T23:30:00Z","operator":"triage-orchestrator","sha1":"86607308aed936718889d66c014142c072a04030","sha256":"eb33bdf63730858a805463d171245b233335dd6d89ed458bc681f7d282e10563","size":19050528768},"event":"evidence_ingest","seq":0,"ts":"2026-05-10T04:10:25.940640+00:00"}
+{"data":{"finding_id":"F-001-os-windows"},"event":"finding_recorded","seq":1,"ts":"2026-05-10T04:28:00.435829+00:00"}
+{"data":{"finding_id":"F-002-capture-time"},"event":"finding_recorded","seq":2,"ts":"2026-05-10T04:28:09.835925+00:00"}
+{"data":{"finding_id":"F-003-rdp-active-foreign"},"event":"finding_recorded","seq":3,"ts":"2026-05-10T04:28:25.831110+00:00"}
+{"data":{"finding_id":"F-004-rdp-redirect-stack"},"event":"finding_recorded","seq":4,"ts":"2026-05-10T04:28:39.995705+00:00"}
+{"data":{"finding_id":"F-005-browser-burst-msedge"},"event":"finding_recorded","seq":5,"ts":"2026-05-10T04:28:56.666652+00:00"}
+{"data":{"finding_id":"F-006-browser-burst-chrome"},"event":"finding_recorded","seq":6,"ts":"2026-05-10T04:29:15.005767+00:00"}
+{"data":{"finding_id":"F-007-interactive-logon-marker"},"event":"finding_recorded","seq":7,"ts":"2026-05-10T04:29:29.936920+00:00"}
+{"data":{"finding_id":"F-008-srl-projects-via-onedrive"},"event":"finding_recorded","seq":8,"ts":"2026-05-10T04:29:51.071526+00:00"}
+{"data":{"finding_id":"F-009-cloud-sync-multi-channel"},"event":"finding_recorded","seq":9,"ts":"2026-05-10T04:30:08.830700+00:00"}
+{"data":{"finding_id":"F-010-no-malicious-injection"},"event":"finding_recorded","seq":10,"ts":"2026-05-10T04:30:27.986227+00:00"}
+{"data":{"finding_id":"F-011-no-shells-spawned"},"event":"finding_recorded","seq":11,"ts":"2026-05-10T04:30:36.044663+00:00"}
+{"data":{"finding_id":"F-012-device-picker-2358-est"},"event":"finding_recorded","seq":12,"ts":"2026-05-10T04:30:45.706386+00:00"}
+{"data":{"finding_id":"F-013-mrc-ir-tool-from-d-drive"},"event":"finding_recorded","seq":13,"ts":"2026-05-10T04:30:55.677584+00:00"}
+{"data":{"finding_id":"F-014-gap-no-registry-plugins"},"event":"finding_recorded","seq":14,"ts":"2026-05-10T04:31:06.903313+00:00"}
+{"data":{"finding_id":"F-015-gap-browser-args-unrecoverable"},"event":"finding_recorded","seq":15,"ts":"2026-05-10T04:31:17.696667+00:00"}
+{"data":{"finding_id":"F-016-rdp-listener-since-boot"},"event":"finding_recorded","seq":16,"ts":"2026-05-10T04:31:26.777643+00:00"}
